@@ -1,0 +1,4 @@
+# file: /home/kensei/repos/hermes-walkie-talkie/agent_peer/transport.py
+# hypothesis_version: 6.135.3
+
+[4096, '3i', 'SO_PEERCRED', 'gid', 'pid', 'uid']

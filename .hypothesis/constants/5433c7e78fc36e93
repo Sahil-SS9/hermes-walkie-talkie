@@ -1,0 +1,4 @@
+# file: /home/kensei/repos/hermes-walkie-talkie/agent_peer/runtime.py
+# hypothesis_version: 6.135.3
+
+[b'x', 0.5, 65536, 'PeerRuntimeManager', 'agent-peer', 'agent_peer.runtime', 'closed', 'closing', 'conn', 'decoder', 'handler error', 'invalid', 'listen', 'no registry record', 'no such peer here', 'out_buffer', 'peer_id', 'pong', 'sock', 'wakeup']
