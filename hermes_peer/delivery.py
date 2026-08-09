@@ -1,0 +1,106 @@
+"""Safe peer delivery into Hermes (HP-706, HP-707).
+
+Inbound peer text is wrapped in an explicit ``<peer_message>`` boundary that
+names the sender, peer ID and message ID, then delivered through the PUBLIC
+``ctx.inject_message(..., mode="queue", target_session=...)`` seam.
+
+Guarantees:
+- Peer text is conversational input only — it cannot invoke slash commands,
+  approve tools or answer protected prompts (host seam enforces this).
+- The recipient model always sees WHO sent the message and that it is
+  untrusted peer input, never human authorisation.
+- Delivery to unknown/closed targets fails closed (False).
+- Duplicate message IDs are delivered once (store dedup).
+"""
+
+from __future__ import annotations
+
+import logging
+
+from agent_peer.models import Envelope, ReceiptState
+from agent_peer.store import MessageStore
+
+from .config import PeerConfig
+from .plugin import host_seam_supported
+
+logger = logging.getLogger("hermes_peer.delivery")
+
+PEER_BOUNDARY_OPEN = "<peer_message>"
+PEER_BOUNDARY_CLOSE = "</peer_message>"
+
+
+def peer_message_marker(content: str, *, sender_name: str, sender_peer_id: str, message_id: str) -> str:
+    """Wrap peer text in the untrusted-message boundary (SEC-1006)."""
+    return (
+        f"{PEER_BOUNDARY_OPEN}\n"
+        f"From: {sender_name}\n"
+        f"Peer ID: {sender_peer_id}\n"
+        f"Message ID: {message_id}\n\n"
+        f"{content}\n"
+        f"{PEER_BOUNDARY_CLOSE}"
+    )
+
+
+class DeliveryAdapter:
+    """Delivers inbound envelopes to the exact Hermes host session."""
+
+    def __init__(self, ctx, session_manager, config: PeerConfig | None = None) -> None:
+        self._ctx = ctx
+        self._session_manager = session_manager
+        self._config = config or PeerConfig()
+
+    def deliver(self, envelope: Envelope) -> bool:
+        """Forward one inbound envelope to its target session. Returns True
+        when the host accepted delivery (queued)."""
+        if not host_seam_supported(self._ctx):
+            return False
+        recipient = self._session_manager.resolve_peer(envelope.recipient_peer_id)
+        if recipient is None or not recipient.host_target:
+            logger.warning(
+                "hermes-peer: dropping message %s for unknown peer %s",
+                envelope.message_id, envelope.recipient_peer_id,
+            )
+            return False
+
+        # Deduplicate: the same message_id is delivered at most once.
+        store: MessageStore = self._session_manager._store
+        if store.get(envelope.message_id) is not None:
+            return False
+        store.record(
+            {
+                "message_id": envelope.message_id,
+                "recipient_peer_id": envelope.recipient_peer_id,
+                "sender_peer_id": envelope.sender.peer_id,
+                "kind": envelope.kind.value,
+                "content": envelope.content,
+                "state": ReceiptState.QUEUED.value,
+                "created_at": envelope.created_at.isoformat(),
+                "expires_at": envelope.expires_at.isoformat(),
+                "reply_to": envelope.reply_to,
+                "conversation_id": envelope.conversation_id,
+                "delivered_at": None,
+                "hop_count": envelope.hop_count,
+            }
+        )
+
+        wrapped = peer_message_marker(
+            envelope.content,
+            sender_name=envelope.sender.name or "unknown",
+            sender_peer_id=envelope.sender.peer_id,
+            message_id=envelope.message_id,
+        )
+        try:
+            accepted = bool(
+                self._ctx.inject_message(
+                    wrapped,
+                    role="user",
+                    mode="queue",
+                    target_session=recipient.host_target,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed
+            logger.warning("hermes-peer: inject_message raised: %s", exc)
+            accepted = False
+        if not accepted:
+            store.transition(envelope.message_id, ReceiptState.HELD)
+        return accepted

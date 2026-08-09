@@ -1,4 +1,4 @@
-"""Hermes plugin registration for hermes_peer (P2 scaffold, extended in P7)."""
+"""Hermes plugin registration for hermes_peer (P7; tools/commands land in P8)."""
 
 from __future__ import annotations
 
@@ -28,11 +28,44 @@ def host_seam_supported(ctx) -> bool:
     return "mode" in params and "target_session" in params
 
 
+# Process-global adapter state (one supervisor per process).
+_manager: object | None = None
+
+
+def get_manager():
+    """Return the process-global PeerSessionManager (None before register)."""
+    return _manager
+
+
 def register(ctx) -> None:
-    """Register the Hermes Peer plugin (tools/commands/hooks land in P7-P8)."""
+    """Register the Hermes Peer plugin: config, lifecycle hooks, delivery."""
+    global _manager
+    if _manager is not None:
+        return  # already registered in this process
+
     if not host_seam_supported(ctx):
         logger.warning(
             "hermes_peer: host Hermes lacks the additive inject_message seam "
             "(mode/target_session). Peer delivery is unavailable on this host; "
             "run `hermes peer doctor` for details. No private-field fallback is used."
         )
+        # Still register lifecycle hooks so presence/registry work once the
+        # host is upgraded; delivery stays disabled (fail closed).
+
+    from .config import PeerConfig
+    from .sessions import PeerSessionManager
+
+    config = PeerConfig.load(ctx)
+    manager = PeerSessionManager(ctx, config=config)
+
+    ctx.register_hook("on_session_start", manager.on_session_start)
+    ctx.register_hook("on_session_end", manager.on_session_end)
+    ctx.register_hook("on_session_reset", manager.on_session_reset)
+    ctx.register_hook("on_session_finalize", manager.on_session_finalize)
+
+    _manager = manager
+    logger.info(
+        "hermes_peer: registered (inbound=%s, seam=%s)",
+        config.inbound,
+        host_seam_supported(ctx),
+    )

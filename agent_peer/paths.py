@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import stat
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,16 +36,29 @@ def _is_owner_only(path: Path, *, directory: bool) -> bool:
 
 def validate_runtime_dir(path: Path) -> Path:
     """Validate (creating if needed) one owner-only runtime directory."""
+    # Path.mkdir(parents=True) creates INTERMEDIATE dirs with the umask
+    # default mode — under umask 002 that is 0775 (group-writable). Record
+    # every missing ancestor so it can be tightened to 0700 as well.
+    created: list[Path] = []
+    probe: Path | None = path
+    while probe is not None and not probe.exists():
+        created.append(probe)
+        probe = probe.parent if probe.parent != probe else None
     try:
         path.mkdir(mode=_OWNER_ONLY_DIR, parents=True, exist_ok=True)
     except OSError as exc:
         raise ConfigurationError(f"cannot create runtime dir {path}: {exc}") from exc
+    for p in created:
+        with suppress(OSError):
+            os.chmod(p, _OWNER_ONLY_DIR)
     if path.is_symlink():
         raise ConfigurationError(f"runtime dir must not be a symlink: {path}")
     if not _is_owner_only(path, directory=True):
+        mode = "?"
+        with suppress(OSError):
+            mode = oct(stat.S_IMODE(path.stat().st_mode))
         raise ConfigurationError(
-            f"runtime dir must be owner-only (0700 or stricter): {path} "
-            f"(mode={oct(stat.S_IMODE(path.stat().st_mode))})"
+            f"runtime dir must be owner-only (0700 or stricter): {path} (mode={mode})"
         )
     return path
 
@@ -93,9 +107,12 @@ def select_runtime_dir() -> Path:
                 if parent.is_symlink():
                     raise ConfigurationError(f"runtime parent must not be a symlink: {parent}")
                 if not _is_owner_only(parent, directory=True):
+                    mode = "?"
+                    with suppress(OSError):
+                        mode = oct(stat.S_IMODE(parent.stat().st_mode))
                     raise ConfigurationError(
                         f"runtime parent must be owner-only (0700 or stricter): {parent} "
-                        f"(mode={oct(stat.S_IMODE(parent.stat().st_mode))})"
+                        f"(mode={mode})"
                     )
             return validate_runtime_dir(candidate)
         except ConfigurationError as exc:

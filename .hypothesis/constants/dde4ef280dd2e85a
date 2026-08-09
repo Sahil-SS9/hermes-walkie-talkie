@@ -1,0 +1,4 @@
+# file: /home/kensei/repos/hermes-walkie-talkie/hermes_peer/sessions.py
+# hypothesis_version: 6.135.3
+
+['aliases.json', 'cli', 'cwd', 'dashboard', 'desktop', 'gateway', 'git_branch', 'git_repo_root', 'hermes_peer.sessions', 'messages.sqlite3', 'pid', 'plugin_shutdown', 'profile', 'session', 'shutdown', 'started_at', 'tui', 'webui']
