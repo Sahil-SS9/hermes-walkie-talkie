@@ -116,8 +116,11 @@ def _resolve_target(mgr, target: str) -> tuple:
     return mgr.resolve_target(target)
 
 
-def peer_send_message(args: dict) -> str:
-    """Send to an exact peer; await the transport receipt; return its state."""
+def peer_send_message(args: dict, **kwargs) -> str:
+    """Send to an exact peer; await the transport receipt; return its state.
+
+    The invoking ``session_id`` comes from Hermes dispatch kwargs (REM-211).
+    """
     mgr, err = _manager_or_error()
     if err:
         return json.dumps(err)
@@ -128,29 +131,37 @@ def peer_send_message(args: dict) -> str:
     record, err = _resolve_target(mgr, target)
     if err:
         return json.dumps(err)
+    session_id = kwargs.get("session_id")
     try:
-        receipt = mgr.send_message(record.peer_id, message, reply_to=args.get("reply_to"))
+        receipt = mgr.send_message(record.peer_id, message, reply_to=args.get("reply_to"), session_id=session_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("peer_send_message failed: %s", exc)
         return json.dumps({"error": f"send failed: {exc}"})
     return json.dumps(receipt)
 
 
-def peer_read_inbox(args: dict) -> str:
-    """List held/queued messages or apply release/refuse to one message."""
+def peer_read_inbox(args: dict, **kwargs) -> str:
+    """List held/queued messages or apply release/refuse to one message.
+
+    The invoking ``session_id`` comes from Hermes dispatch kwargs (REM-211).
+    """
     mgr, err = _manager_or_error()
     if err:
         return json.dumps(err)
+    session_id = kwargs.get("session_id")
     action = (args.get("action") or "list").strip().lower()
     if action not in ("list", "release", "refuse"):
         return json.dumps({"error": f"unknown action {action!r}; expected list|release|refuse"})
     if action == "list":
-        return json.dumps({"messages": mgr.read_inbox()})
+        try:
+            return json.dumps({"messages": mgr.read_inbox(session_id=session_id)})
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
     message_id = (args.get("message_id") or "").strip()
     if not message_id:
         return json.dumps({"error": "message_id is required for release/refuse"})
     if action == "release":
-        ok = mgr.release_message(message_id)
+        ok = mgr.release_message(message_id, session_id=session_id)
         return json.dumps({"released": ok, "message_id": message_id} if ok else {"error": f"no held message {message_id}"})
-    ok = mgr.refuse_message(message_id)
+    ok = mgr.refuse_message(message_id, session_id=session_id)
     return json.dumps({"refused": ok, "message_id": message_id} if ok else {"error": f"no held message {message_id}"})

@@ -68,41 +68,47 @@ def cmd_peers(_raw: str) -> str:
     return "\n".join(lines)
 
 
-def cmd_peer_name(raw: str) -> str:
+def cmd_peer_name(raw: str, **kwargs) -> str:
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
     name = (raw or "").strip()
     if not name:
         return "Usage: /peer-name <name>"
+    session_id = kwargs.get("session_id")
     try:
         if not mgr._peers:
             return "No active peer session to name."
-        mgr.set_alias(name)
+        mgr.set_alias(name, session_id=session_id)
     except ValueError as exc:
         return f"Invalid name: {exc}"
     return f"Peer renamed to '{name}'."
 
 
-def cmd_peer_policy(raw: str) -> str:
+def cmd_peer_policy(raw: str, **kwargs) -> str:
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
     policy = (raw or "").strip().lower()
     if policy not in {p.value for p in Policy}:
         return f"Invalid policy {policy!r}; expected one of {sorted(p.value for p in Policy)}"
+    session_id = kwargs.get("session_id")
     try:
-        mgr.set_policy(policy)
+        mgr.set_policy(policy, session_id=session_id)
     except ValueError as exc:
         return f"Invalid policy: {exc}"
     return f"Inbound policy set to '{policy}'."
 
 
-def cmd_peer_inbox(_raw: str) -> str:
+def cmd_peer_inbox(_raw: str, **kwargs) -> str:
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
-    messages = mgr.read_inbox()
+    session_id = kwargs.get("session_id")
+    try:
+        messages = mgr.read_inbox(session_id=session_id)
+    except ValueError as exc:
+        return f"Inbox error: {exc}"
     if not messages:
         return "Inbox is empty."
     lines = [f"Held/queued messages ({len(messages)}):"]

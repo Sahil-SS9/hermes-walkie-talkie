@@ -107,10 +107,13 @@ class TestPeerListAgents:
 
 
 class TestPeerSendMessage:
+    # All handlers receive session_id from Hermes dispatch kwargs (REM-211).
+    KW = {"session_id": "sess-a"}
+
     def test_send_by_exact_peer_id(self, two_peers):
         mgr = get_manager()
         target = mgr.list_peers()[1]
-        result = json.loads(peer_send_message({"target": target.peer_id, "message": "schema changed"}))
+        result = json.loads(peer_send_message({"target": target.peer_id, "message": "schema changed"}, **self.KW))
         assert result["state"] in ("queued", "held", "refused", "unreachable", "expired", "invalid", "rate_limited", "over_capacity")
         assert result["message_id"]
 
@@ -118,42 +121,44 @@ class TestPeerSendMessage:
         mgr = get_manager()
         target = mgr.list_peers()[1]
         mgr.set_alias_for(target.peer_id, "backend")
-        result = json.loads(peer_send_message({"target": "backend", "message": "hi"}))
+        result = json.loads(peer_send_message({"target": "backend", "message": "hi"}, **self.KW))
         assert result["recipient_peer_id"] == target.peer_id
 
     def test_send_to_unknown_target_returns_error(self, two_peers):
-        result = json.loads(peer_send_message({"target": "nobody", "message": "hi"}))
+        result = json.loads(peer_send_message({"target": "nobody", "message": "hi"}, **self.KW))
         assert result["error"]
 
     def test_ambiguous_name_returns_error(self, two_peers):
         mgr = get_manager()
         for peer in mgr.list_peers():
             mgr.set_alias_for(peer.peer_id, "dupe")
-        result = json.loads(peer_send_message({"target": "dupe", "message": "hi"}))
+        result = json.loads(peer_send_message({"target": "dupe", "message": "hi"}, **self.KW))
         assert "ambigu" in result["error"].lower()
 
     def test_reply_to_correlation(self, two_peers):
         mgr = get_manager()
         target = mgr.list_peers()[1]
-        original = json.loads(peer_send_message({"target": target.peer_id, "message": "ask"}))
+        original = json.loads(peer_send_message({"target": target.peer_id, "message": "ask"}, **self.KW))
         reply = json.loads(
-            peer_send_message({"target": target.peer_id, "message": "answer", "reply_to": original["message_id"]})
+            peer_send_message({"target": target.peer_id, "message": "answer", "reply_to": original["message_id"]}, **self.KW)
         )
         assert reply["state"] in ("queued", "held", "refused", "unreachable", "expired", "invalid", "rate_limited", "over_capacity")
 
 
 class TestPeerReadInbox:
+    KW = {"session_id": "sess-a"}
+
     def test_inbox_empty_by_default(self, two_peers):
-        result = json.loads(peer_read_inbox({}))
+        result = json.loads(peer_read_inbox({}, **self.KW))
         assert isinstance(result["messages"], list)
 
     def test_release_and_refuse_actions(self, two_peers):
         mgr = get_manager()
-        recipient = mgr.list_peers()[0]
+        recipient = mgr._peers["sess-a"]  # exact session's peer
         from agent_peer.models import ReceiptState
 
         def _insert_held(content: str):
-            env = mgr._make_envelope(recipient=recipient.peer_id, content=content)
+            env = mgr._make_envelope(session_id="sess-a", recipient=recipient.peer_id, content=content)
             mgr._store.record(
                 {
                     "message_id": env.message_id,
@@ -175,17 +180,17 @@ class TestPeerReadInbox:
         release_env = _insert_held("release me")
         refuse_env = _insert_held("refuse me")
 
-        result = json.loads(peer_read_inbox({"action": "list"}))
+        result = json.loads(peer_read_inbox({"action": "list"}, **self.KW))
         held = [m for m in result["messages"] if m["message_id"] == release_env.message_id]
         assert held and held[0]["state"] == "held"
 
         # Release forwards to the harness.
-        released = json.loads(peer_read_inbox({"action": "release", "message_id": release_env.message_id}))
+        released = json.loads(peer_read_inbox({"action": "release", "message_id": release_env.message_id}, **self.KW))
         assert released.get("released") is True
         assert len(mgr._ctx.injected) >= 1
 
         # Refuse marks the OTHER held message refused (audit only).
-        refused = json.loads(peer_read_inbox({"action": "refuse", "message_id": refuse_env.message_id}))
+        refused = json.loads(peer_read_inbox({"action": "refuse", "message_id": refuse_env.message_id}, **self.KW))
         assert refused.get("refused") is True
         row = mgr._store.get(refuse_env.message_id)
         assert row["state"] == "refused"
@@ -194,20 +199,21 @@ class TestPeerReadInbox:
 class TestManagerInboundPolicy:
     def test_hold_policy_holds_inbound(self, env, two_peers):
         mgr = get_manager()
-        mgr.set_policy("hold")
-        target = mgr.list_peers()[0]
+        # Set policy for sess-a's exact peer, then send TO that peer.
+        mgr.set_policy("hold", session_id="sess-a")
+        target = mgr._peers["sess-a"]
         from agent_peer.models import Kind
 
-        env2 = mgr._make_envelope(recipient=target.peer_id, content="held by policy", kind=Kind.MESSAGE)
+        env2 = mgr._make_envelope(session_id="sess-a", recipient=target.peer_id, content="held by policy", kind=Kind.MESSAGE)
         state = mgr._on_inbound(env2)
         assert state.value == "held"
         assert mgr._ctx.injected == []  # never forwarded
 
     def test_refuse_policy_refuses_without_content(self, env, two_peers):
         mgr = get_manager()
-        mgr.set_policy("refuse")
-        target = mgr.list_peers()[0]
-        env2 = mgr._make_envelope(recipient=target.peer_id, content="refused by policy")
+        mgr.set_policy("refuse", session_id="sess-a")
+        target = mgr._peers["sess-a"]
+        env2 = mgr._make_envelope(session_id="sess-a", recipient=target.peer_id, content="refused by policy")
         state = mgr._on_inbound(env2)
         assert state.value == "refused"
         row = mgr._store.get(env2.message_id)
@@ -216,8 +222,8 @@ class TestManagerInboundPolicy:
 
     def test_accept_policy_forwards(self, env, two_peers):
         mgr = get_manager()
-        target = mgr.list_peers()[0]
-        env2 = mgr._make_envelope(recipient=target.peer_id, content="accepted")
+        target = mgr._peers["sess-a"]
+        env2 = mgr._make_envelope(session_id="sess-a", recipient=target.peer_id, content="accepted")
         state = mgr._on_inbound(env2)
         assert state.value == "queued"
         assert len(mgr._ctx.injected) == 1

@@ -22,7 +22,15 @@ from pathlib import Path
 
 from agent_peer.discovery import DiscoveryService
 from agent_peer.identity import AliasStore, generate_instance_id, generate_peer_id, host_metadata
-from agent_peer.models import Envelope, Kind, PeerIdentity, PeerRecord, Presence, ReceiptState
+from agent_peer.models import (
+    Envelope,
+    Kind,
+    PeerIdentity,
+    PeerRecord,
+    Policy,
+    Presence,
+    ReceiptState,
+)
 from agent_peer.paths import RuntimePaths, select_runtime_dir, select_state_dir
 from agent_peer.policy import PolicyEngine
 from agent_peer.registry import Registry
@@ -65,6 +73,7 @@ class PeerSessionManager:
         self._peer_handles: dict[str, PeerHandle] = {}
         self._carry_alias: str | None = None  # explicit alias across rotation
         self._policy = PolicyEngine(policy=self._config.inbound)
+        self._session_policies: dict[str, Policy] = {}  # peer_id -> session-scoped policy
 
     # ------------------------------------------------------------------
     # Lifecycle hooks (fired by Hermes with explicit kwargs — never
@@ -118,27 +127,42 @@ class PeerSessionManager:
             self._registry.update_presence(peer_id, Presence.IDLE)
 
     def on_session_reset(self, session_id: str, platform: str | None = None, **kwargs) -> None:
-        """Session rotation: close existing registrations, register the new id.
+        """Session rotation: close the EXACT old registration, register the new id.
 
-        The hook carries the NEW session id; a CLI process owns one peer, so
-        v1 closes every registration owned by this process before registering
-        the rotated session. The alias and inbox state survive; the stale
-        host target is never reused (HP-709).
+        The hook carries the NEW session id plus ``old_session_id`` (when the
+        host seam threads it, REM-307). Only that exact old session is
+        finalised; unrelated sessions in the same process are never touched
+        (F-03/REM-208). The alias and inbox state survive; the stale host
+        target is never reused (HP-709).
         """
-        for old_session in list(self._session_to_peer.keys()):
-            peer_id = self._session_to_peer.pop(old_session, None)
-            if peer_id is None:
-                continue
+        old_session = kwargs.get("old_session_id")
+        if old_session is None:
+            # Backwards-compatible single-session path: a CLI process owns one
+            # peer, so rotate it. In a multi-session process without the old
+            # id, never silently close every session.
+            if len(self._session_to_peer) == 1:
+                old_session = next(iter(self._session_to_peer))
+            else:
+                raise ValueError(
+                    "on_session_reset requires old_session_id when multiple sessions are active"
+                )
+        self._rotate_session(old_session, session_id, platform=platform, **kwargs)
+
+    def _rotate_session(self, old_session: str, new_session: str, platform: str | None = None, **kwargs) -> None:
+        """Finalise exactly one old session and register the new one."""
+        peer_id = self._session_to_peer.pop(old_session, None)
+        if peer_id is not None:
             handle = self._peer_handles.pop(peer_id, None)
             if handle is not None:
                 handle.close()
             old_record = self._peers.pop(old_session, None)
+            self._session_policies.pop(peer_id, None)
             if old_record is not None and old_record.name:
                 explicit = self._aliases.get_alias(old_record.peer_id)
                 if explicit:
                     # Carry the explicit alias forward to the rotated session.
                     self._carry_alias = explicit
-        self.on_session_start(session_id, platform=platform, **kwargs)
+        self.on_session_start(new_session, platform=platform, **kwargs)
 
     def on_session_finalize(self, session_id: str, platform: str | None = None, reason: str = "shutdown", **kwargs) -> None:
         peer_id = self._session_to_peer.pop(session_id, None)
@@ -148,6 +172,7 @@ class PeerSessionManager:
         if handle is not None:
             handle.close()
         self._peers.pop(session_id, None)
+        self._session_policies.pop(peer_id, None)
         logger.info("hermes-peer: removed peer for session %s (%s)", session_id, reason)
 
     def shutdown(self) -> None:
@@ -180,27 +205,50 @@ class PeerSessionManager:
     def resolve_peer(self, peer_id: str) -> PeerRecord | None:
         return self._registry.get(peer_id)
 
-    def set_alias(self, name: str) -> None:
-        """Persist an alias for THIS process's first registered peer."""
+    def _require_session(self, session_id: str) -> PeerRecord:
+        """Return the exact session's bound record or raise (F-03).
+
+        Multi-session hosts must never fall back to first-peer selection.
+        """
+        rec = self._peers.get(session_id)
+        if rec is None:
+            raise ValueError(f"no active peer for session {session_id!r}")
+        return rec
+
+    def set_alias(self, name: str, session_id: str | None = None) -> None:
+        """Persist an alias for the exact invoking session (F-03/REM-205)."""
         import dataclasses
 
-        if not self._peers:
-            raise ValueError("no active peer session to name")
-        first = next(iter(self._peers.values()))
-        self._aliases.set_alias(first.peer_id, name)
-        renamed = dataclasses.replace(first, name=name)
+        # Backwards-compatible single-session fallback: when exactly one
+        # session is registered and none is named, use it (documented).
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
+        self._aliases.set_alias(rec.peer_id, name)
+        renamed = dataclasses.replace(rec, name=name)
+        # Preserve the canonical bound socket/instance authority (F-02).
         self._registry.register(renamed)
-        self._peers[first.session_id] = renamed
+        self._peers[session_id] = renamed
 
     def peer_id_for_session(self, session_id: str) -> str | None:
         return self._session_to_peer.get(session_id)
 
-    def _make_envelope(self, *, recipient: str, content: str, reply_to: str | None = None, kind: Kind = Kind.MESSAGE, conversation_id: str | None = None) -> Envelope:
-        """Build a validated outbound envelope from this peer's identity."""
-        if not self._peers:
-            raise ValueError("no active peer session")
-        first = next(iter(self._peers.values()))
-        sender = PeerIdentity(peer_id=first.peer_id, name=first.name, profile=first.profile)
+    def _make_envelope(self, *, recipient: str, content: str, reply_to: str | None = None, kind: Kind = Kind.MESSAGE, conversation_id: str | None = None, session_id: str | None = None) -> Envelope:
+        """Build a validated outbound envelope from the EXACT session (F-03).
+
+        ``session_id`` must identify the invoking session. Multi-session
+        hosts never fall back to first-peer selection.
+        """
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        sender_rec = self._require_session(session_id)
+        sender = PeerIdentity(peer_id=sender_rec.peer_id, name=sender_rec.name, profile=sender_rec.profile)
         from agent_peer.models import make_envelope
 
         return make_envelope(
@@ -212,6 +260,18 @@ class PeerSessionManager:
             conversation_id=conversation_id,
         )
 
+    def _policy_engine_for(self, peer_id: str) -> PolicyEngine:
+        """A policy engine for the exact recipient peer (REM-210).
+
+        Session-scoped policy overrides the process-global default for that
+        peer. The rate/capacity limiter is shared per engine instance, so
+        session-scoped engines carry their own limiter.
+        """
+        session_policy = self._session_policies.get(peer_id)
+        if session_policy is not None:
+            return PolicyEngine(policy=session_policy)
+        return self._policy
+
     def _on_inbound(self, envelope: Envelope) -> ReceiptState:
         """Policy-driven inbound pipeline: evaluate, persist, forward/hold/refuse.
 
@@ -222,9 +282,12 @@ class PeerSessionManager:
         - refuse -> persist minimal audit metadata (content never stored).
         - expired/rate_limited/over_capacity/invalid -> audit row only, the
           sender gets the explicit non-success receipt.
+
+        Policy is evaluated against the EXACT recipient session (REM-210).
         """
-        self._policy.register_pending(envelope.recipient_peer_id, self._store.count_pending(envelope.recipient_peer_id))
-        decision = self._policy.evaluate(envelope)
+        engine = self._policy_engine_for(envelope.recipient_peer_id)
+        engine.register_pending(envelope.recipient_peer_id, self._store.count_pending(envelope.recipient_peer_id))
+        decision = engine.evaluate(envelope)
         state = decision.state.value
 
         if decision.action == "drop":
@@ -294,26 +357,35 @@ class PeerSessionManager:
     # Outbound + inbox operations used by tools/commands (P8)
     # ------------------------------------------------------------------
 
-    def send_message(self, peer_id: str, content: str, reply_to: str | None = None) -> dict:
-        """Send one message and return the transport receipt as a dict."""
-        env = self._make_envelope(recipient=peer_id, content=content, reply_to=reply_to)
+    def send_message(self, peer_id: str, content: str, reply_to: str | None = None, session_id: str | None = None) -> dict:
+        """Send one message from the EXACT session (F-03/REM-209)."""
+        env = self._make_envelope(recipient=peer_id, content=content, reply_to=reply_to, session_id=session_id)
         receipt = self._runtime.send(env)
         return receipt.as_dict()
 
-    def read_inbox(self) -> list[dict]:
-        """Held and queued messages for THIS process's peer(s)."""
-        rows: list[dict] = []
-        for session_id in self._peers:
-            peer_id = self._session_to_peer.get(session_id)
-            if peer_id is None:
-                continue
-            rows.extend(self._store.pending_for(peer_id))
-        return rows
+    def read_inbox(self, session_id: str | None = None) -> list[dict]:
+        """Held and queued messages for the EXACT session (F-03/REM-207)."""
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
+        return self._store.pending_for(rec.peer_id)
 
-    def release_message(self, message_id: str) -> bool:
-        # Explicit release: deliver a held message to the harness.
+    def release_message(self, message_id: str, session_id: str | None = None) -> bool:
+        """Explicit release of a held message owned by the EXACT session."""
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
         row = self._store.get(message_id)
         if row is None or row["state"] != ReceiptState.HELD.value:
+            return False
+        if row["recipient_peer_id"] != rec.peer_id:
+            # A message addressed to another session cannot be released here.
             return False
         try:
             env = self._envelope_from_row(row)
@@ -323,17 +395,38 @@ class PeerSessionManager:
 
         return DeliveryAdapter(self._ctx, self).deliver(env, force=True)
 
-    def refuse_message(self, message_id: str) -> bool:
-        """Explicit refuse: mark a held message refused (audit only)."""
+    def refuse_message(self, message_id: str, session_id: str | None = None) -> bool:
+        """Explicit refuse of a held message owned by the EXACT session."""
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
         row = self._store.get(message_id)
         if row is None or row["state"] != ReceiptState.HELD.value:
             return False
+        if row["recipient_peer_id"] != rec.peer_id:
+            return False
         return self._store.transition(message_id, ReceiptState.REFUSED)
 
-    def set_policy(self, policy_name: str) -> None:
+    def set_policy(self, policy_name: str, session_id: str | None = None) -> None:
+        """Set the inbound policy for the EXACT session (F-03/REM-210)."""
         from agent_peer.models import Policy
 
-        self._policy.set_policy(Policy(policy_name))
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
+        self._session_policies[rec.peer_id] = Policy(policy_name)
+
+    def policy_for(self, session_id: str) -> str:
+        """The inbound policy for one exact session (default: global)."""
+        rec = self._require_session(session_id)
+        policy = self._session_policies.get(rec.peer_id)
+        return policy.value if policy is not None else self._policy.policy.value
 
     def set_alias_for(self, peer_id: str, name: str) -> None:
         """Persist an alias for an exact peer id (used by tools/tests)."""

@@ -72,9 +72,9 @@ class TestSlashCommands:
     def test_peer_policy_command(self, env):
         mgr = get_manager()
         mgr.on_session_start("sess-a", platform="cli")
-        out = env.commands["peer-policy"]["handler"]("hold")
+        out = env.commands["peer-policy"]["handler"]("hold", session_id="sess-a")
         assert "hold" in out
-        assert mgr._policy.policy.value == "hold"
+        assert mgr.policy_for("sess-a") == "hold"
 
     def test_peer_policy_rejects_unknown(self, env):
         mgr = get_manager()
@@ -140,7 +140,7 @@ class TestCliDispatch:
             policy = "hold"
 
         assert run_peer_cli(Args()) == 0
-        assert mgr._policy.policy.value == "hold"
+        assert mgr.policy_for("sess-a") == "hold"
 
     def test_run_peer_cli_no_manager(self, capsys):
         from hermes_peer import plugin
