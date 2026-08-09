@@ -1,0 +1,40 @@
+{
+  "plan": "/home/kensei/.hermes/plans/2026-08-09_222021-hermes-walkie-talkie-review-remediation.md",
+  "bases": {
+    "standalone": "1722a7cfa910befc4e6992767c44c66857a7e57a",
+    "core": "5e7a111b3e748b0cfeb463f536ca52ad0db468fd"
+  },
+  "branches": {
+    "standalone": "candidate/hwt-remediation-20260809",
+    "core": "candidate/hwt-core-remediation-20260809"
+  },
+  "worktrees": {
+    "standalone": "/home/kensei/worktrees/hermes-walkie-talkie-remediation",
+    "core": "/home/kensei/worktrees/hermes-walkie-talkie-core-remediation"
+  },
+  "packet": "/home/kensei/.hermes/reviews/hermes-walkie-talkie-remediation-20260809",
+  "packet_files": [
+    "HANDOFF.md",
+    "VERIFICATION.md",
+    "DEVIATIONS.md",
+    "completed-remediation-plan.md"
+  ],
+  "phases": ["R0", "R1", "R2", "R3", "R4", "R5", "R6"],
+  "tasks": [
+    "REM-001", "REM-002", "REM-003", "REM-004", "REM-005", "REM-006", "REM-007", "REM-008", "REM-009", "REM-010",
+    "REM-101", "REM-102", "REM-103", "REM-104", "REM-105", "REM-106", "REM-107", "REM-108", "REM-109", "REM-110", "REM-111", "REM-112", "REM-113", "REM-114",
+    "REM-201", "REM-202", "REM-203", "REM-204", "REM-205", "REM-206", "REM-207", "REM-208", "REM-209", "REM-210", "REM-211", "REM-212", "REM-213", "REM-214",
+    "REM-301", "REM-302", "REM-303", "REM-304", "REM-305", "REM-306", "REM-307", "REM-308", "REM-309", "REM-310", "REM-311", "REM-312",
+    "REM-401", "REM-402", "REM-403", "REM-404", "REM-405", "REM-406", "REM-407", "REM-408", "REM-409", "REM-410", "REM-411", "REM-412",
+    "REM-501", "REM-502", "REM-503", "REM-504", "REM-505", "REM-506", "REM-507", "REM-508", "REM-509", "REM-510", "REM-511", "REM-512", "REM-513",
+    "REM-601", "REM-602", "REM-603", "REM-604", "REM-605", "REM-606", "REM-607", "REM-608", "REM-609", "REM-610", "REM-611", "REM-612", "REM-613", "REM-614"
+  ],
+  "acceptances": [
+    "ACC-01", "ACC-02", "ACC-03", "ACC-04", "ACC-05", "ACC-06", "ACC-07", "ACC-08", "ACC-09",
+    "ACC-10", "ACC-11", "ACC-12", "ACC-13", "ACC-14", "ACC-15", "ACC-16", "ACC-17", "ACC-18"
+  ],
+  "no_gos": [
+    "NG-01", "NG-02", "NG-03", "NG-04", "NG-05", "NG-06", "NG-07", "NG-08", "NG-09", "NG-10",
+    "NG-11", "NG-12", "NG-13", "NG-14", "NG-15"
+  ]
+}
