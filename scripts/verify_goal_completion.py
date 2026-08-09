@@ -126,8 +126,8 @@ def main() -> int:
     ledger_ids: set[str] = set()
     for row in ledger_rows:
         cells = row.split("|")
-        if len(cells) >= 2:
-            task_cell = cells[1]
+        if len(cells) >= 3:
+            task_cell = cells[2]  # [0]='' [1]=date [2]=task ids
             for token in re.split(r"[,/]", task_cell):
                 token = token.strip()
                 if TASK_ID_RE.fullmatch(token):
