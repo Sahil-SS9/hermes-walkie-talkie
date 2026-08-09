@@ -72,8 +72,8 @@ def main() -> int:
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 msgs = [
-                    l for l in out_b.read_text(encoding="utf-8").splitlines()
-                    if l.startswith("MSG ")
+                    line for line in out_b.read_text(encoding="utf-8").splitlines()
+                    if line.startswith("MSG ")
                 ]
                 if msgs:
                     break
@@ -89,8 +89,8 @@ def main() -> int:
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 a_msgs = [
-                    l for l in out_a.read_text(encoding="utf-8").splitlines()
-                    if l.startswith("MSG ")
+                    line for line in out_a.read_text(encoding="utf-8").splitlines()
+                    if line.startswith("MSG ")
                 ]
                 if a_msgs:
                     break

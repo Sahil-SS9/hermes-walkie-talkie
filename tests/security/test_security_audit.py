@@ -129,7 +129,7 @@ class TestSymlinkRaceAudit:
         foreign = runtime_dir / "s" / "not-ours.sock"
         foreign.write_text("x", encoding="utf-8")
         mgr = PeerRuntimeManager(runtime_dir)
-        handle = mgr.register_peer(_record("a"), on_message=lambda e: ReceiptState.QUEUED)
+        mgr.register_peer(_record("a"), on_message=lambda e: ReceiptState.QUEUED)
         mgr.shutdown()
         assert foreign.exists()  # untouched
 
@@ -210,7 +210,7 @@ class TestStaticAudit:
                         pass  # comment-only; no action
                 # No commented-out implementation lines (a line that is a
                 # comment containing a Python statement pattern).
-                commented = [l for l in text.splitlines() if re.match(r"^\s*#\s*(if |for |def |return |import |from |\w+ = )", l)]
+                commented = [line for line in text.splitlines() if re.match(r"^\s*#\s*(if |for |def |return |import |from |\w+ = )", line)]
                 assert not commented, f"{py}: commented-out code: {commented[:3]}"
 
     def test_no_shell_interpolation(self):

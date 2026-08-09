@@ -46,7 +46,7 @@ def main() -> int:
     paths = RuntimePaths(Path(args.runtime))
     runtime = PeerRuntimeManager(paths)
     policy = PolicyEngine(policy=args.policy)
-    out = open(args.out, "a", encoding="utf-8")
+    out = open(args.out, "a", encoding="utf-8")  # noqa: SIM115 - held open for the worker lifetime
     me = PeerRecord(
         peer_id=generate_peer_id(),
         instance_id=generate_instance_id(),

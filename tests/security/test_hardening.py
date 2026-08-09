@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
+import sqlite3
 import stat
 import threading
 import time
@@ -138,7 +139,7 @@ class TestFlood:
         store = MessageStore(runtime_dir.parent / "state" / "m.sqlite3")
         try:
             row_base = {"message_id": "", "recipient_peer_id": str(uuid.uuid4()), "sender_peer_id": str(uuid.uuid4()), "kind": "message", "content": "x", "state": "held", "created_at": NOW.isoformat(), "expires_at": (NOW + timedelta(minutes=5)).isoformat(), "hop_count": 0}
-            for i in range(120):
+            for _ in range(120):
                 row = dict(row_base, message_id=str(uuid.uuid4()))
                 store.record(row)
             assert store.count_pending(row_base["recipient_peer_id"]) == 120
@@ -192,7 +193,7 @@ class TestConcurrencyStress:
         a = _record("a")
         b = _record("b")
         mgr.register_peer(a, on_message=lambda e: ReceiptState.QUEUED)
-        handle_b = mgr.register_peer(b, on_message=lambda e: ReceiptState.QUEUED)
+        mgr.register_peer(b, on_message=lambda e: ReceiptState.QUEUED)
         sender = PeerIdentity(peer_id=a.peer_id, name="a", profile="")
         errors: list[Exception] = []
 
@@ -200,7 +201,7 @@ class TestConcurrencyStress:
             try:
                 for i in range(20):
                     mgr.send(_envelope(sender, b.peer_id, f"x-{i}"))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - shutdown race expected
                 errors.append(exc)
 
         t = threading.Thread(target=sender_loop)
@@ -229,7 +230,7 @@ class TestStorageFailures:
         try:
             store2 = MessageStore(db)
             try:
-                with pytest.raises(Exception):
+                with pytest.raises((sqlite3.Error, Exception)):
                     store2.record(dict(row, message_id=str(uuid.uuid4())))
             finally:
                 store2.close()

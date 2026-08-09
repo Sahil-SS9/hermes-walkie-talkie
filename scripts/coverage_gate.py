@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -60,14 +61,12 @@ def main() -> int:
         if line.startswith("TOTAL"):
             parts = line.split()
             if len(parts) >= 6:
-                try:
+                with suppress(ValueError):
                     totals = {
                         "stmts": int(parts[1]), "miss": int(parts[2]),
                         "branch": int(parts[3]), "brpart": int(parts[4]),
                         "cover": float(parts[5].rstrip("%")),
                     }
-                except ValueError:
-                    pass
 
     if not totals:
         print(out[-3000:])

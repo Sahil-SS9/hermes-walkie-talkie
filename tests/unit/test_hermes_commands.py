@@ -117,7 +117,7 @@ class TestCliDispatch:
             message = "cli test"
             reply_to = None
 
-        out = capsys.readouterr().out  # drain
+        capsys.readouterr()  # drain
         run_peer_cli(Args())
         assert "queued" in capsys.readouterr().out
 

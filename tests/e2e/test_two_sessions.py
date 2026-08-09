@@ -159,7 +159,6 @@ class TestThreeSessions:
 class TestPolicies:
     def test_accept_hold_refuse_walkthrough(self, runtime_dir):
         """E2E-906: the sender sees the correct receipt state each time."""
-        out = runtime_dir.parent / "out_pol.log"
         accept = Worker(runtime_dir, "accept-peer", runtime_dir.parent / "out_acc.log", policy="accept")
         hold = Worker(runtime_dir, "hold-peer", runtime_dir.parent / "out_hold.log", policy="hold")
         refuse = Worker(runtime_dir, "refuse-peer", runtime_dir.parent / "out_ref.log", policy="refuse")
