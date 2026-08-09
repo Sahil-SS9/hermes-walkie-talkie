@@ -62,3 +62,7 @@ class OverCapacityError(PolicyError):
 
 class ConfigurationError(ValidationError):
     """Invalid configuration values (limits, policy, paths)."""
+
+
+class StoreError(AgentPeerError):
+    """Persistent-store failure (disk-full, read-only, corruption)."""
