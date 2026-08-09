@@ -21,8 +21,9 @@ import os
 from pathlib import Path
 
 from agent_peer.identity import AliasStore, generate_instance_id, generate_peer_id, host_metadata
-from agent_peer.models import Envelope, Kind, PeerIdentity, PeerRecord, Presence
+from agent_peer.models import Envelope, Kind, PeerIdentity, PeerRecord, Presence, ReceiptState
 from agent_peer.paths import RuntimePaths, select_runtime_dir, select_state_dir
+from agent_peer.policy import PolicyEngine
 from agent_peer.registry import Registry
 from agent_peer.runtime import PeerHandle, PeerRuntimeManager
 from agent_peer.store import MessageStore
@@ -61,6 +62,7 @@ class PeerSessionManager:
         self._session_to_peer: dict[str, str] = {}  # session_id -> peer_id
         self._peer_handles: dict[str, PeerHandle] = {}
         self._carry_alias: str | None = None  # explicit alias across rotation
+        self._policy = PolicyEngine(policy=self._config.inbound)
 
     # ------------------------------------------------------------------
     # Lifecycle hooks (fired by Hermes with explicit kwargs — never
@@ -189,11 +191,170 @@ class PeerSessionManager:
             conversation_id=conversation_id,
         )
 
-    def _on_inbound(self, envelope: Envelope):
-        """Delivery handler wired into the runtime: forward to the host."""
+    def _on_inbound(self, envelope: Envelope) -> ReceiptState:
+        """Policy-driven inbound pipeline: evaluate, persist, forward/hold/refuse.
+
+        - accept -> forward to the harness via the public inject seam
+          (queued only after host acceptance).
+        - hold -> persist without forwarding; explicit release/refuse actions
+          come from the tools/commands (HP-803).
+        - refuse -> persist minimal audit metadata (content never stored).
+        - expired/rate_limited/over_capacity/invalid -> audit row only, the
+          sender gets the explicit non-success receipt.
+        """
+        self._policy.register_pending(envelope.recipient_peer_id, self._store.count_pending(envelope.recipient_peer_id))
+        decision = self._policy.evaluate(envelope)
+        state = decision.state.value
+
+        if decision.action == "drop":
+            self._store.record(
+                {
+                    "message_id": envelope.message_id,
+                    "recipient_peer_id": envelope.recipient_peer_id,
+                    "sender_peer_id": envelope.sender.peer_id,
+                    "kind": envelope.kind.value,
+                    "content": "",
+                    "state": state,
+                    "created_at": envelope.created_at.isoformat(),
+                    "expires_at": envelope.expires_at.isoformat(),
+                    "reply_to": envelope.reply_to,
+                    "conversation_id": envelope.conversation_id,
+                    "delivered_at": None,
+                    "hop_count": envelope.hop_count,
+                }
+            )
+            return decision.state
+
+        if decision.action == "refuse":
+            self._store.record(
+                {
+                    "message_id": envelope.message_id,
+                    "recipient_peer_id": envelope.recipient_peer_id,
+                    "sender_peer_id": envelope.sender.peer_id,
+                    "kind": envelope.kind.value,
+                    "content": "",  # minimal audit metadata only (AP-606)
+                    "state": ReceiptState.REFUSED.value,
+                    "created_at": envelope.created_at.isoformat(),
+                    "expires_at": envelope.expires_at.isoformat(),
+                    "reply_to": envelope.reply_to,
+                    "conversation_id": envelope.conversation_id,
+                    "delivered_at": None,
+                    "hop_count": envelope.hop_count,
+                }
+            )
+            return ReceiptState.REFUSED
+
+        if decision.action == "hold":
+            self._store.record(
+                {
+                    "message_id": envelope.message_id,
+                    "recipient_peer_id": envelope.recipient_peer_id,
+                    "sender_peer_id": envelope.sender.peer_id,
+                    "kind": envelope.kind.value,
+                    "content": envelope.content,
+                    "state": ReceiptState.HELD.value,
+                    "created_at": envelope.created_at.isoformat(),
+                    "expires_at": envelope.expires_at.isoformat(),
+                    "reply_to": envelope.reply_to,
+                    "conversation_id": envelope.conversation_id,
+                    "delivered_at": None,
+                    "hop_count": envelope.hop_count,
+                }
+            )
+            return ReceiptState.HELD
+
+        # accept: forward to the harness; queued only after host acceptance.
         from .delivery import DeliveryAdapter
 
-        DeliveryAdapter(self._ctx, self).deliver(envelope)
-        from agent_peer.models import ReceiptState
+        accepted = DeliveryAdapter(self._ctx, self).deliver(envelope)
+        return ReceiptState.QUEUED if accepted else ReceiptState.HELD
 
-        return ReceiptState.QUEUED
+    # ------------------------------------------------------------------
+    # Outbound + inbox operations used by tools/commands (P8)
+    # ------------------------------------------------------------------
+
+    def send_message(self, peer_id: str, content: str, reply_to: str | None = None) -> dict:
+        """Send one message and return the transport receipt as a dict."""
+        env = self._make_envelope(recipient=peer_id, content=content, reply_to=reply_to)
+        receipt = self._runtime.send(env)
+        return receipt.as_dict()
+
+    def read_inbox(self) -> list[dict]:
+        """Held and queued messages for THIS process's peer(s)."""
+        rows: list[dict] = []
+        for session_id in self._peers:
+            peer_id = self._session_to_peer.get(session_id)
+            if peer_id is None:
+                continue
+            rows.extend(self._store.pending_for(peer_id))
+        return rows
+
+    def release_message(self, message_id: str) -> bool:
+        # Explicit release: deliver a held message to the harness.
+        row = self._store.get(message_id)
+        if row is None or row["state"] != ReceiptState.HELD.value:
+            return False
+        try:
+            env = self._envelope_from_row(row)
+        except Exception:  # noqa: BLE001
+            return False
+        from .delivery import DeliveryAdapter
+
+        return DeliveryAdapter(self._ctx, self).deliver(env, force=True)
+
+    def refuse_message(self, message_id: str) -> bool:
+        """Explicit refuse: mark a held message refused (audit only)."""
+        row = self._store.get(message_id)
+        if row is None or row["state"] != ReceiptState.HELD.value:
+            return False
+        return self._store.transition(message_id, ReceiptState.REFUSED)
+
+    def set_policy(self, policy_name: str) -> None:
+        from agent_peer.models import Policy
+
+        self._policy.set_policy(Policy(policy_name))
+
+    def set_alias_for(self, peer_id: str, name: str) -> None:
+        """Persist an alias for an exact peer id (used by tools/tests)."""
+        import dataclasses
+
+        self._aliases.set_alias(peer_id, name)
+        record = self._registry.get(peer_id)
+        if record is not None:
+            renamed = dataclasses.replace(record, name=name)
+            self._registry.register(renamed)
+            for session_id, rec in self._peers.items():
+                if rec.peer_id == peer_id:
+                    self._peers[session_id] = renamed
+
+    def doctor(self) -> dict:
+        """Diagnostics for `hermes peer doctor` (REL-1104)."""
+        from .plugin import host_seam_supported
+
+        return {
+            "seam_supported": host_seam_supported(self._ctx),
+            "runtime_dir": str(self._paths.root),
+            "registry_entries": len(self._registry.list_peers()),
+            "local_sessions": len(self._peers),
+            "policy": self._policy.policy.value,
+            "ok": host_seam_supported(self._ctx) and not self._paths.root.is_symlink(),
+        }
+
+    def _envelope_from_row(self, row: dict) -> Envelope:
+        """Rebuild an Envelope from a stored row (for release)."""
+        from datetime import datetime
+
+        from agent_peer.models import make_envelope
+
+        return make_envelope(
+            sender=PeerIdentity(peer_id=row["sender_peer_id"], name="peer", profile=""),
+            recipient_peer_id=row["recipient_peer_id"],
+            kind=Kind(row["kind"]),
+            content=row["content"],
+            reply_to=row.get("reply_to"),
+            conversation_id=row.get("conversation_id"),
+            hop_count=row.get("hop_count", 0),
+            message_id=row["message_id"],
+            ttl_seconds=1,
+            now=datetime.fromisoformat(row["created_at"]),
+        )

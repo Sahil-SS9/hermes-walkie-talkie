@@ -1,0 +1,4 @@
+# file: /home/kensei/repos/hermes-walkie-talkie/hermes_peer/tools.py
+# hypothesis_version: 6.135.3
+
+['action', 'additionalProperties', 'cwd', 'description', 'enum', 'error', 'git_branch', 'git_repo_root', 'hermes-peer', 'hermes_peer.tools', 'list', 'message', 'message_id', 'messages', 'name', 'object', 'peer_id', 'peer_list_agents', 'peer_read_inbox', 'peer_send_message', 'peers', 'profile', 'properties', 'refuse', 'refused', 'release', 'released', 'reply_to', 'required', 'status', 'string', 'surface', 'target', 'type', '📥', '📨', '🛰️']

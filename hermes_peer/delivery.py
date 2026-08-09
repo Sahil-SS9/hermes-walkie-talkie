@@ -49,9 +49,13 @@ class DeliveryAdapter:
         self._session_manager = session_manager
         self._config = config or PeerConfig()
 
-    def deliver(self, envelope: Envelope) -> bool:
+    def deliver(self, envelope: Envelope, *, force: bool = False) -> bool:
         """Forward one inbound envelope to its target session. Returns True
-        when the host accepted delivery (queued)."""
+        when the host accepted delivery (queued).
+
+        ``force=True`` bypasses the dedup guard — used by explicit release
+        of an already-stored held message (HP-803).
+        """
         if not host_seam_supported(self._ctx):
             return False
         recipient = self._session_manager.resolve_peer(envelope.recipient_peer_id)
@@ -62,26 +66,29 @@ class DeliveryAdapter:
             )
             return False
 
-        # Deduplicate: the same message_id is delivered at most once.
+        # Deduplicate: the same message_id is delivered at most once —
+        # unless this is an explicit release of a stored held message.
         store: MessageStore = self._session_manager._store
-        if store.get(envelope.message_id) is not None:
+        existing = store.get(envelope.message_id)
+        if existing is not None and not force:
             return False
-        store.record(
-            {
-                "message_id": envelope.message_id,
-                "recipient_peer_id": envelope.recipient_peer_id,
-                "sender_peer_id": envelope.sender.peer_id,
-                "kind": envelope.kind.value,
-                "content": envelope.content,
-                "state": ReceiptState.QUEUED.value,
-                "created_at": envelope.created_at.isoformat(),
-                "expires_at": envelope.expires_at.isoformat(),
-                "reply_to": envelope.reply_to,
-                "conversation_id": envelope.conversation_id,
-                "delivered_at": None,
-                "hop_count": envelope.hop_count,
-            }
-        )
+        if existing is None:
+            store.record(
+                {
+                    "message_id": envelope.message_id,
+                    "recipient_peer_id": envelope.recipient_peer_id,
+                    "sender_peer_id": envelope.sender.peer_id,
+                    "kind": envelope.kind.value,
+                    "content": envelope.content,
+                    "state": ReceiptState.QUEUED.value,
+                    "created_at": envelope.created_at.isoformat(),
+                    "expires_at": envelope.expires_at.isoformat(),
+                    "reply_to": envelope.reply_to,
+                    "conversation_id": envelope.conversation_id,
+                    "delivered_at": None,
+                    "hop_count": envelope.hop_count,
+                }
+            )
 
         wrapped = peer_message_marker(
             envelope.content,
@@ -103,4 +110,7 @@ class DeliveryAdapter:
             accepted = False
         if not accepted:
             store.transition(envelope.message_id, ReceiptState.HELD)
+        elif existing is not None:
+            # Explicit release of a stored held message -> queued.
+            store.transition(envelope.message_id, ReceiptState.QUEUED)
         return accepted

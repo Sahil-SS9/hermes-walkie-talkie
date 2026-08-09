@@ -53,6 +53,15 @@ def test_root_plugin_entry_exposes_register(tmp_path, monkeypatch):
         def register_hook(self, name, callback) -> None:
             self.hooks.setdefault(name, []).append(callback)
 
+        def register_tool(self, *a, **kw) -> None:
+            pass
+
+        def register_command(self, *a, **kw) -> None:
+            pass
+
+        def register_cli_command(self, *a, **kw) -> None:
+            pass
+
         def inject_message(self, content, role="user", *, mode="queue", target_session=None):
             return True
 
@@ -79,6 +88,15 @@ def test_hermes_peer_plugin_registers_on_supported_host(tmp_path, monkeypatch):
 
         def register_hook(self, name, callback) -> None:
             self.hooks.setdefault(name, []).append(callback)
+
+        def register_tool(self, *a, **kw) -> None:
+            pass
+
+        def register_command(self, *a, **kw) -> None:
+            pass
+
+        def register_cli_command(self, *a, **kw) -> None:
+            pass
 
         def inject_message(self, content, role="user", *, mode="queue", target_session=None):
             return True

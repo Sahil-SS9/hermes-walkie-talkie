@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import inspect
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .sessions import PeerSessionManager
 
 logger = logging.getLogger("hermes_peer")
 
@@ -29,10 +33,10 @@ def host_seam_supported(ctx) -> bool:
 
 
 # Process-global adapter state (one supervisor per process).
-_manager: object | None = None
+_manager: PeerSessionManager | None = None
 
 
-def get_manager():
+def get_manager() -> PeerSessionManager | None:
     """Return the process-global PeerSessionManager (None before register)."""
     return _manager
 
@@ -62,6 +66,12 @@ def register(ctx) -> None:
     ctx.register_hook("on_session_end", manager.on_session_end)
     ctx.register_hook("on_session_reset", manager.on_session_reset)
     ctx.register_hook("on_session_finalize", manager.on_session_finalize)
+
+    from .commands import register_commands
+    from .tools import register_tools
+
+    register_tools(ctx)
+    register_commands(ctx)
 
     _manager = manager
     logger.info(

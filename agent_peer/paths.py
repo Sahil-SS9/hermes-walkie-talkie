@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import stat
+import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,13 +146,31 @@ class RuntimePaths:
     def __init__(self, root: Path) -> None:
         object.__setattr__(self, "root", validate_runtime_dir(root))
         object.__setattr__(self, "registry_dir", validate_runtime_dir(root / "registry"))
-        object.__setattr__(self, "sockets_dir", validate_runtime_dir(root / "sockets"))
+        # Short name for the sockets dir: AF_UNIX paths are capped at 108
+        # bytes and shared roots can sit deep under $XDG_RUNTIME_DIR
+        # (ADR-0001: short Unix-socket-safe path). If even the short name
+        # does not fit (deep pytest/tmp trees), relocate sockets to a short
+        # owner-only root under the system temp dir — still same-user, still
+        # 0700, still shared across profiles.
+        sockets_dir = root / "s"
+        # Probe with the REAL socket-name shape (16 hex chars + ".sock").
+        if len(str(sockets_dir / ("0" * 16 + ".sock"))) > _MAX_SOCKET_PATH:
+            sockets_dir = Path(tempfile.gettempdir()) / f"agent-peer-{os.geteuid()}"
+        object.__setattr__(self, "sockets_dir", validate_runtime_dir(sockets_dir))
 
     def registry_file_for(self, peer_id: str) -> Path:
         return self.registry_dir / f"{peer_id}.json"
 
     def socket_path_for(self, peer_id: str, *, must_be_short: bool = False) -> Path:
-        path = self.sockets_dir / f"{peer_id}.sock"
+        """Deterministic short socket path: 16 hex chars of the peer id hash.
+
+        Long enough to be collision-safe for a single user's peers, short
+        enough to fit any sane runtime root under the AF_UNIX bound.
+        """
+        import hashlib
+
+        short = hashlib.sha256(peer_id.encode("utf-8")).hexdigest()[:16]
+        path = self.sockets_dir / f"{short}.sock"
         if must_be_short and len(str(path)) > _MAX_SOCKET_PATH:
             raise ConfigurationError(
                 f"socket path too long ({len(str(path))} > {_MAX_SOCKET_PATH}): {path}"

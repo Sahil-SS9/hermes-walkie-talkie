@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -74,9 +76,12 @@ class TestRuntimePathSelection:
         root = _make_root(tmp_path)
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(root))
         paths = RuntimePaths(root)
-        too_long = root / ("p" * 300)
-        with pytest.raises(ConfigurationError):
-            paths.socket_path_for(too_long.name, must_be_short=True)
+        # Socket names are hash-shortened; only an absurdly long root can
+        # still overflow — and that is handled by relocation (see
+        # test_deep_root_relocates_sockets_to_short_dir). A non-existent
+        # peer id never produces an overlong path.
+        socket_path = paths.socket_path_for(str(uuid.uuid4()))
+        assert len(str(socket_path)) < 108
 
     def test_validate_runtime_dir_rejects_world_writable(self, tmp_path):
         root = _make_root(tmp_path, mode=0o777)
@@ -87,6 +92,16 @@ class TestRuntimePathSelection:
         root = _make_root(tmp_path)
         paths = RuntimePaths(root)
         assert paths.registry_dir == root / "registry"
-        assert paths.sockets_dir == root / "sockets"
+        assert paths.sockets_dir == root / "s"
         assert paths.registry_dir.exists()
         assert (paths.registry_dir.stat().st_mode & 0o077) == 0
+
+    def test_deep_root_relocates_sockets_to_short_dir(self, tmp_path):
+        """Overlong socket paths are handled by relocating sockets to a short
+        owner-only root under the system temp dir (ADR-0001)."""
+        deep = tmp_path / ("d" * 120)  # guaranteed to exceed the AF_UNIX bound
+        deep.mkdir(parents=True, mode=0o700)
+        paths = RuntimePaths(deep)
+        assert paths.sockets_dir == Path(tempfile.gettempdir()) / f"agent-peer-{os.geteuid()}"
+        socket_path = paths.socket_path_for(str(uuid.uuid4()))
+        assert len(str(socket_path)) < 108

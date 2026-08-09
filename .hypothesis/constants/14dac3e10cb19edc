@@ -1,0 +1,4 @@
+# file: /home/kensei/repos/hermes-walkie-talkie/hermes_peer/plugin.py
+# hypothesis_version: 6.135.3
+
+['PeerSessionManager', 'hermes_peer', 'inject_message', 'mode', 'on_session_end', 'on_session_finalize', 'on_session_reset', 'on_session_start', 'target_session']
