@@ -64,7 +64,7 @@ def main() -> int:
             names = {p.name for p in registry.list_peers()}
             print(f"Discovery: {sorted(names)}")
 
-            a.stdin.write(f"SEND {peer_b} The API schema changed: tenant_id replaces account_id.\\n")
+            a.stdin.write(f"SEND {peer_b} The API schema changed: tenant_id replaces account_id.\n")
             a.stdin.flush()
             sent = a.stdout.readline().strip()
             print(f"A → B receipt: {sent}")
@@ -81,7 +81,7 @@ def main() -> int:
             print(f"B received: {msgs[0]}")
             reply_to = msgs[0].split()[1]
 
-            b.stdin.write(f"REPLY {peer_a} {reply_to} Migration finished successfully.\\n")
+            b.stdin.write(f"REPLY {peer_a} {reply_to} Migration finished successfully.\n")
             b.stdin.flush()
             replied = b.stdout.readline().strip()
             print(f"B → A receipt: {replied}")
