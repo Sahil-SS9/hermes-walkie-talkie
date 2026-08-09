@@ -9,7 +9,7 @@ remediation, upstream PR submission, release and live pilot.
 
 | Repository | Branch | Commit | Clean |
 |---|---|---|---|
-| Hermes Walkie Talkie (standalone) | main | 6a5cf4cd72c2638912836cbe335047dc4a944797 | yes |
+| Hermes Walkie Talkie (standalone) | main | 31fb2caf8b99e1a2ceb1b1a3ad5c413a15572210 | yes |
 | Hermes core candidate (isolated worktree) | candidate/hermes-walkie-talkie-p1-20260809 | 5e7a111b3e748b0cfeb463f536ca52ad0db468fd | yes |
 
 Canonical Hermes checkout (`/home/kensei/repos/KenseiAgent`): NOT modified by
