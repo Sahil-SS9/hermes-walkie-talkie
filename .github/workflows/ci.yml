@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: uv sync --group dev
+      - name: Unit tests
+        run: uv run pytest tests/unit -q
+      - name: Integration tests
+        run: uv run pytest tests/integration -q
+      - name: E2E tests
+        run: uv run pytest tests/e2e -q
+      - name: Full test suite
+        run: uv run pytest -q
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run ty check agent_peer hermes_peer
+      - name: Build
+        run: uv build
+      # NOTE: Linux is the release-blocking platform for v1. The macOS job
+      # above is configured and runs the same matrix; platform-specific
+      # runtime verification (SO_PEERCRED equivalent) is covered on macOS CI
+      # once approved remote runs are enabled.

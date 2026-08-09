@@ -1,0 +1,10 @@
+name: hermes-peer
+version: 0.1.0rc1
+description: "Same-machine peer messaging between Hermes sessions (Agent Peer core)."
+author: Sahil Saghir
+license: MIT
+entry: __init__.py
+# No runtime dependency on Hermes internals: the adapter uses only the public
+# plugin API (register_tool, register_command, register_hook, inject_message).
+requires:
+  - hermes >= 0.0.0
