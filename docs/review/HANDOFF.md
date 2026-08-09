@@ -9,8 +9,8 @@ remediation, upstream PR submission, release and live pilot.
 
 | Repository | Branch | Commit | Clean |
 |---|---|---|---|
-| Hermes Walkie Talkie (standalone) | main | __STANDALONE_SHA__ | __STANDALONE_CLEAN__ |
-| Hermes core candidate (isolated worktree) | candidate/hermes-walkie-talkie-p1-20260809 | __CORE_SHA__ | __CORE_CLEAN__ |
+| Hermes Walkie Talkie (standalone) | main | 8bc1bac4b546a5e445cc2a5073d32d180cd05be2 | yes |
+| Hermes core candidate (isolated worktree) | candidate/hermes-walkie-talkie-p1-20260809 | 5e7a111b3e748b0cfeb463f536ca52ad0db468fd | yes |
 
 Canonical Hermes checkout (`/home/kensei/repos/KenseiAgent`): NOT modified by
 this goal (its HEAD may have moved externally; unrelated dirty files were
