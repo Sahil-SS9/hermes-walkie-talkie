@@ -2,7 +2,7 @@
 
 All commands below run against the exact final candidate SHAs (P12 freeze):
 
-- hermes-walkie-talkie: 31fb2caf8b99e1a2ceb1b1a3ad5c413a15572210 (branch main)
+- hermes-walkie-talkie: 31fb2caf8b99e1a2ceb1b1a3ad5c413a15572210 (branch main) — the commit at which every gate below was run and passed; the repository HEAD may be a later commit that differs only in this packet's own SHA reference (self-reference resolution).
 - hermes-walkie-talkie-core: 5e7a111b3e748b0cfeb463f536ca52ad0db468fd (branch candidate/hermes-walkie-talkie-p1-20260809)
 
 ## Standalone repository (from /home/kensei/repos/hermes-walkie-talkie)
