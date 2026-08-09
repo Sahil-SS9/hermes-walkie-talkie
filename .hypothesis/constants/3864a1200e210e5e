@@ -1,4 +1,0 @@
-# file: /home/kensei/repos/hermes-walkie-talkie/agent_peer/__init__.py
-# hypothesis_version: 6.135.3
-
-['0.1.0rc1', 'PROTOCOL_ID', 'PROTOCOL_NAME', 'PROTOCOL_VERSION', '__version__', 'agent-peer']

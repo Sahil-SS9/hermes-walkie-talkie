@@ -1,4 +1,0 @@
-# file: /home/kensei/repos/hermes-walkie-talkie/hermes_peer/sessions.py
-# hypothesis_version: 6.135.3
-
-['aliases.json', 'cli', 'content', 'conversation_id', 'created_at', 'cwd', 'dashboard', 'delivered_at', 'desktop', 'drop', 'expires_at', 'gateway', 'git_branch', 'git_repo_root', 'hermes_peer.sessions', 'hold', 'hop_count', 'kind', 'local_sessions', 'message_id', 'messages.sqlite3', 'ok', 'peer', 'pid', 'plugin_shutdown', 'policy', 'profile', 'recipient_peer_id', 'refuse', 'registry_entries', 'reply_to', 'runtime_dir', 'seam_supported', 'sender_peer_id', 'session', 'shutdown', 'started_at', 'state', 'tui', 'webui']

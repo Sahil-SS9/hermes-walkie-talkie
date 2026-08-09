@@ -1,4 +1,0 @@
-# file: /home/kensei/repos/hermes-walkie-talkie/.venv/bin/pytest
-# hypothesis_version: 6.135.3
-
-['-script.pyw', '.exe', '__main__']

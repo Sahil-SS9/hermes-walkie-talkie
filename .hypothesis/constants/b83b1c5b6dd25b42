@@ -1,4 +1,0 @@
-# file: /home/kensei/repos/hermes-walkie-talkie/hermes_peer/config.py
-# hypothesis_version: 6.135.3
-
-[1024, 'PeerConfig', 'entries', 'hermes-peer', 'inbound', 'name', 'plugins', 'settings']

@@ -1,4 +1,0 @@
-# file: /home/kensei/repos/hermes-walkie-talkie/agent_peer/paths.py
-# hypothesis_version: 6.135.3
-
-[100, 384, 448, '.local', '?', 'AGENT_PEER_STATE_DIR', 'XDG_RUNTIME_DIR', 'XDG_STATE_HOME', 'agent-peer', 'registry', 'registry_dir', 'root', 'runtime', 'sockets', 'sockets_dir', 'state']

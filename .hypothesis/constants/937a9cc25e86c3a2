@@ -1,4 +1,0 @@
-# file: /home/kensei/repos/hermes-walkie-talkie/agent_peer/registry.py
-# hypothesis_version: 6.135.3
-
-[384, '*.json', ',', '.tmp', ':', 'agent_peer.registry', 'cwd', 'git_branch', 'git_repo_root', 'host_target', 'instance_id', 'last_seen', 'name', 'peer_id', 'pid', 'profile', 'session_id', 'socket_path', 'started_at', 'status', 'surface', 'utf-8']

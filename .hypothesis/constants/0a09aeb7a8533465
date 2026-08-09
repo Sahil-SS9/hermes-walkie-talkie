@@ -1,4 +1,0 @@
-# file: /home/kensei/repos/hermes-walkie-talkie/agent_peer/models.py
-# hypothesis_version: 6.135.3
-
-[300, 'Envelope', 'Kind', 'PeerIdentity', 'PeerRecord', 'Policy', 'Presence', 'Receipt', 'ReceiptState', 'Surface', 'accept', 'cli', 'closing', 'created_at', 'delivered_at', 'detail', 'expired', 'expires_at', 'gateway', 'held', 'hold', 'idle', 'instance_id', 'invalid', 'kind', 'kind must be a Kind', 'make_envelope', 'message', 'message_id', 'over_capacity', 'peer_id', 'ping', 'pong', 'queued', 'rate_limited', 'receipt', 'recipient_peer_id', 'refuse', 'refused', 'reply_to', 'state', 'tui', 'unreachable', 'utf-8', 'working']

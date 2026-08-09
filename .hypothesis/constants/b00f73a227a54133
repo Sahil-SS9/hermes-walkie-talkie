@@ -1,4 +1,0 @@
-# file: /home/kensei/repos/hermes-walkie-talkie/agent_peer/constants.py
-# hypothesis_version: 6.135.3
-
-[1.0, 3.0, 15.0, 45.0, 60.0, 100, 300, 1024, 'accept', 'agent-peer']
