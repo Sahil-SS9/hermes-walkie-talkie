@@ -144,6 +144,7 @@ class RuntimePaths:
     sockets_dir: Path
 
     def __init__(self, root: Path) -> None:
+        root = Path(root)  # tolerate str roots from argv/config
         object.__setattr__(self, "root", validate_runtime_dir(root))
         object.__setattr__(self, "registry_dir", validate_runtime_dir(root / "registry"))
         # Short name for the sockets dir: AF_UNIX paths are capped at 108

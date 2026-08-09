@@ -89,7 +89,106 @@ class TestSlashCommands:
         assert isinstance(out, str)
 
 
-class TestCliSubcommand:
+class TestCliDispatch:
+    def test_run_peer_cli_all_actions(self, env, capsys):
+        """run_peer_cli dispatches list/send/inbox/name/policy/doctor."""
+        from hermes_peer.commands import run_peer_cli
+
+        mgr = get_manager()
+        mgr.on_session_start("sess-a", platform="cli")
+
+        class Args:
+            peer_action = "list"
+
+        assert run_peer_cli(Args()) == 0
+        assert "Live peers" in capsys.readouterr().out
+
+        class Args:
+            peer_action = "doctor"
+
+        assert run_peer_cli(Args()) == 0
+
+        target = mgr.list_peers()[0]
+        target_id = target.peer_id
+
+        class Args:
+            peer_action = "send"
+            target = target_id
+            message = "cli test"
+            reply_to = None
+
+        out = capsys.readouterr().out  # drain
+        run_peer_cli(Args())
+        assert "queued" in capsys.readouterr().out
+
+        class Args:
+            peer_action = "inbox"
+            action = "list"
+
+        run_peer_cli(Args())
+        assert "Held/queued" in capsys.readouterr().out or "empty" in capsys.readouterr().out
+
+        class Args:
+            peer_action = "name"
+            name = "cli-alias"
+
+        assert run_peer_cli(Args()) == 0
+        assert mgr.list_peers()[0].name == "cli-alias"
+
+        class Args:
+            peer_action = "policy"
+            policy = "hold"
+
+        assert run_peer_cli(Args()) == 0
+        assert mgr._policy.policy.value == "hold"
+
+    def test_run_peer_cli_no_manager(self, capsys):
+        from hermes_peer import plugin
+        from hermes_peer.commands import run_peer_cli
+
+        plugin._manager = None
+        assert run_peer_cli(type("A", (), {"peer_action": "list"})()) == 1
+        assert "not active" in capsys.readouterr().out
+        # No manager -> any action fails closed with 1 (never crashes).
+        assert run_peer_cli(type("A", (), {"peer_action": None})()) == 1
+
+    def test_run_peer_cli_error_paths(self, env, capsys):
+        """inbox release/refuse, send-to-unknown and CLI failure paths."""
+        from hermes_peer.commands import run_peer_cli
+
+        mgr = get_manager()
+        mgr.on_session_start("sess-a", platform="cli")
+
+        class Args:
+            peer_action = "inbox"
+            action = "release"
+            message_id = "no-such-id"
+
+        assert run_peer_cli(Args()) == 1
+        assert "no held message" in capsys.readouterr().out
+
+        class Args:
+            peer_action = "inbox"
+            action = "refuse"
+            message_id = "no-such-id"
+
+        assert run_peer_cli(Args()) == 1
+
+        class Args:
+            peer_action = "send"
+            target = "nobody"
+            message = "hi"
+            reply_to = None
+
+        out = run_peer_cli(Args())
+        assert out == 0
+        assert "no reachable peer" in capsys.readouterr().out
+
+        class Args:
+            peer_action = "inbox"
+            action = "bogus"
+
+        assert run_peer_cli(Args()) == 2  # unknown action falls through
     def test_peer_cli_registered(self, env):
         assert "peer" in env.cli_commands
 

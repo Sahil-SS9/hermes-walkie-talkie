@@ -48,3 +48,15 @@ same signature.
 
 The minimum Hermes commit is recorded in `docs/review/VERIFICATION.md` and
 `docs/review/HANDOFF.md` after the candidate freeze.
+
+## Hermes core requirement (candidate seam)
+
+| Hermes source | Commit | Notes |
+|---|---|---|
+| Isolated candidate worktree | `candidate/hermes-walkie-talkie-p1-20260809` (see review packet for the exact SHA) | Contains the additive `inject_message` seam (P1) |
+| Any later Hermes build | — | Same signature `(content, role="user", *, mode, target_session)` |
+
+Without the seam the plugin loads but delivery is disabled with a clear
+warning (`hermes peer doctor` reports it). macOS runtime verification of the
+peer-credentials fallback is configured in CI but unexecuted until approved
+remote runs exist.

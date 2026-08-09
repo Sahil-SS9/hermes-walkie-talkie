@@ -166,6 +166,9 @@ def run_peer_cli(args) -> int:
         print(result)
         return 0
     if action == "inbox":
+        if args.action not in ("list", "release", "refuse"):
+            print(f"Unknown inbox action {args.action!r}; expected list|release|refuse")
+            return 2
         if args.action == "list":
             print(cmd_peer_inbox(""))
             return 0

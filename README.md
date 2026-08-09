@@ -50,6 +50,15 @@ hermes plugins install /path/to/hermes-walkie-talkie
 The agent uses `peer_list_agents`, `peer_send_message` and
 `peer_read_inbox` to discover, message and reply — no copy/paste.
 
+**No-Hermes demo** (pure transport, no API keys):
+
+```bash
+uv run python scripts/demo_two_sessions.py
+```
+
+Spawns two disposable sessions named `architect` and `backend`, exchanges a
+message, a reply and correlated receipts over real Unix sockets.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)

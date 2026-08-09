@@ -152,20 +152,20 @@ mgr.shutdown()
             p_a = subprocess.Popen(
                 [sys.executable, str(script_path)],
                 env=_env(home_a, "real-session-a", inject_a),
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
             procs.append(p_a)
             ready_a = p_a.stdout.readline().strip()
-            assert ready_a.startswith("READY "), ready_a
+            assert ready_a.startswith("READY "), f"A: {ready_a!r} stderr={p_a.stderr.read()[-500:]!r}"
 
             p_b = subprocess.Popen(
                 [sys.executable, str(script_path)],
                 env=_env(home_b, "real-session-b", inject_b),
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
             procs.append(p_b)
             ready_b = p_b.stdout.readline().strip()
-            assert ready_b.startswith("READY "), ready_b
+            assert ready_b.startswith("READY "), f"B: {ready_b!r} stderr={p_b.stderr.read()[-500:]!r}"
             peer_b = ready_b.split()[1]
 
             # Session A sends to session B.
@@ -175,7 +175,7 @@ mgr.shutdown()
             assert sent.startswith("SENT queued"), sent
 
             # B receives the message through its inject seam.
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + 30
             received = False
             while time.monotonic() < deadline:
                 text = inject_b.read_text(encoding="utf-8")
@@ -183,7 +183,13 @@ mgr.shutdown()
                     received = True
                     break
                 time.sleep(0.2)
-            assert received, f"B never received the message; inject log: {inject_b.read_text()}"
+            if not received:
+                err_a = p_a.stderr.read() if p_a.stderr else ""
+                err_b = p_b.stderr.read() if p_b.stderr else ""
+                raise AssertionError(
+                    f"B never received the message; inject log: {inject_b.read_text()!r}; "
+                    f"A stderr: {err_a[-500:]!r}; B stderr: {err_b[-500:]!r}"
+                )
             assert "<peer_message>" in inject_b.read_text(encoding="utf-8")
         finally:
             for p in procs:

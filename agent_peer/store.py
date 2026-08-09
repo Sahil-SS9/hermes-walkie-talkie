@@ -11,8 +11,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import threading
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -58,7 +60,16 @@ class MessageStore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        self._tighten_file_modes()
         self._migrate()
+
+    def _tighten_file_modes(self) -> None:
+        """SQLite creates db/wal/shm with the umask default; tighten all to
+        owner-only (SEC-1001: 'database: owner-only')."""
+        for suffix in ("", "-wal", "-shm"):
+            candidate = Path(str(self._db_path) + suffix)
+            with suppress(OSError):
+                os.chmod(candidate, 0o600)
 
     # ------------------------------------------------------------------
     # Migrations
