@@ -1,0 +1,4 @@
+# file: /home/kensei/repos/hermes-walkie-talkie/agent_peer/identity.py
+# hypothesis_version: 6.135.3
+
+[384, ',', '-', '--abbrev-ref', '--show-toplevel', '.tmp', '/', ':', 'HEAD', '\\', 'cwd', 'git', 'git_branch', 'git_repo_root', 'hostname', 'pid', 'rev-parse', 'session', 'started_at', 'threading', 'utf-8']
