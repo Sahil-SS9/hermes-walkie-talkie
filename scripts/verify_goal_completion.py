@@ -119,14 +119,25 @@ def main() -> int:
     if nogo_checked:
         fail(f"checked no-go blocker(s): {nogo_checked}")
 
-    # 3. Ledger evidence for every checked task.
-    ledger = "\n".join(lines[ledger_start:]) if ledger_start >= 0 else ""
+    # 3. Ledger evidence for every checked task. A ledger row's task cell may
+    #    list several IDs ("AP-301, AP-302") or a gate ("AP-007 / Gate P0");
+    #    tokenize the cell so every listed ID counts as evidenced.
+    ledger_rows = [line for line in (lines[ledger_start:] if ledger_start >= 0 else []) if line.startswith("|")]
+    ledger_ids: set[str] = set()
+    for row in ledger_rows:
+        cells = row.split("|")
+        if len(cells) >= 2:
+            task_cell = cells[1]
+            for token in re.split(r"[,/]", task_cell):
+                token = token.strip()
+                if TASK_ID_RE.fullmatch(token):
+                    ledger_ids.add(token)
     checked_ids: set[str] = set()
     for line in lines[:acc_start] if acc_start >= 0 else lines:
         if "- [x]" in line:
             checked_ids.update(TASK_ID_RE.findall(line))
     for task_id in sorted(checked_ids):
-        if f"| {task_id} " not in ledger and f"|{task_id}" not in ledger:
+        if task_id not in ledger_ids:
             fail(f"missing ledger row for checked task {task_id}")
 
     # 4. Review packet.
