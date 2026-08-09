@@ -47,3 +47,8 @@ observed_no_go_blockers: 0.
 The security, concurrency, recovery and release gates were rerun from a
 clean state by the single executor and recorded in the plan ledger. This is
 producer evidence, not a substitute for the post-goal independent review.
+
+## Completed-plan snapshot
+
+- docs/review/completed-plan.md SHA-256: c16e8b6eb1d36ec881ac934bf145a19b489d0ba91dd2d851cc63cb2ade28c9f3
+- Copied from the live plan after the final verifier pass (PILOT-1208 two-pass finalisation).
