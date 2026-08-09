@@ -57,9 +57,7 @@ def cmd_peers(_raw: str) -> str:
     if mgr is None:
         return "hermes-peer is not active in this process."
     lines = ["Live peers:"]
-    for record in mgr.list_peers():
-        if record.peer_id not in mgr._peer_handles:
-            continue
+    for record in mgr.list_peers():  # discovery: all live peers, incl. local
         repo = record.git_branch or record.cwd
         lines.append(
             f"  {record.name}  ({record.peer_id[:8]}…)  "

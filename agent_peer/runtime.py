@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .codec import FrameDecoder, encode_envelope
-from .constants import RECEIPT_TIMEOUT
+from .constants import PROTOCOL_ID, RECEIPT_TIMEOUT
 from .errors import AgentPeerError, FrameError, TimeoutError_, UnreachableError
 from .models import Envelope, Kind, PeerRecord, Receipt, ReceiptState
 from .paths import RuntimePaths, select_runtime_dir
@@ -53,10 +53,16 @@ def _now_iso() -> str:
 
 @dataclass
 class PeerHandle:
-    """Handle returned by ``register_peer``; close() tears the peer down."""
+    """Handle returned by ``register_peer``; close() tears the peer down.
+
+    ``record`` is the canonical BOUND record (with socket_path, socket_uid,
+    socket_inode populated) that was atomically published — callers must
+    store THIS record, never the pre-bind copy (F-02, REM-203).
+    """
 
     peer_id: str
     socket_path: Path
+    record: PeerRecord | None = None
     _manager: PeerRuntimeManager = None  # type: ignore[assignment]
 
     def close(self) -> None:
@@ -116,24 +122,58 @@ class PeerRuntimeManager:
     # ------------------------------------------------------------------
 
     def register_peer(self, record: PeerRecord, on_message: MessageHandler) -> PeerHandle:
-        """Register a peer: bind its socket, start the supervisor if needed."""
+        """Register a peer: bind its socket, capture UID/inode, start the
+        supervisor, then atomically publish the canonical bound record.
+
+        Registration order (REM-106): mint IDs -> derive socket path -> bind
+        -> set owner permissions -> capture UID/inode from the bound socket ->
+        register the listener -> start/confirm the supervisor -> publish the
+        complete canonical record. On any failure before publication, the
+        listener is closed/unregistered and no registry record remains.
+        """
         with self._lock:
             socket_path = self._paths.socket_path_for(record.peer_id)
             self._reclaim_stale_socket(socket_path)
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.bind(str(socket_path))
-            sock.listen(64)
-            sock.setblocking(False)
-            self._selector.register(sock, selectors.EVENT_READ, "listen")
-            import dataclasses
+            try:
+                sock.bind(str(socket_path))
+                sock.listen(64)
+                sock.setblocking(False)
+                # Capture the bound socket's UID and inode (REM-105/106).
+                st = socket_path.stat()
+                import dataclasses
 
-            record = dataclasses.replace(record, socket_path=str(socket_path))
-            self._peers[record.peer_id] = record
-            self._handlers[record.peer_id] = on_message
-            self._registry.register(record)
-            self._ensure_thread()
-            handle = PeerHandle(peer_id=record.peer_id, socket_path=socket_path, _manager=self)
-            return handle
+                record = dataclasses.replace(
+                    record,
+                    socket_path=str(socket_path),
+                    socket_uid=st.st_uid,
+                    socket_inode=st.st_ino,
+                    protocol=record.protocol or PROTOCOL_ID,
+                )
+                self._selector.register(sock, selectors.EVENT_READ, "listen")
+                self._peers[record.peer_id] = record
+                self._handlers[record.peer_id] = on_message
+                # Publish AFTER the listener is ready (registration order).
+                self._registry.register(record)
+                self._ensure_thread()
+                handle = PeerHandle(
+                    peer_id=record.peer_id,
+                    socket_path=socket_path,
+                    record=record,
+                    _manager=self,
+                )
+                return handle
+            except Exception:
+                # Close/unregister the listener and leave no record.
+                with suppress(Exception):
+                    self._selector.unregister(sock)
+                with contextlib.suppress(OSError):
+                    sock.close()
+                with contextlib.suppress(OSError):
+                    socket_path.unlink()
+                self._peers.pop(record.peer_id, None)
+                self._handlers.pop(record.peer_id, None)
+                raise
 
     def unregister_peer(self, peer_id: str) -> None:
         """Graceful teardown: selector, socket, exact path, registry file."""
@@ -278,6 +318,9 @@ class PeerRuntimeManager:
         if envelope.kind is Kind.PING:
             self._reply(conn, state, "pong")
             return
+        if envelope.kind is Kind.DISCOVER:
+            self._reply_alive(conn, state, envelope)
+            return
         handler = self._handlers.get(envelope.recipient_peer_id)
         if handler is None:
             self._reply(conn, state, ReceiptState.UNREACHABLE.value, "no such peer here")
@@ -292,6 +335,56 @@ class PeerRuntimeManager:
         if state_name not in {s.value for s in ReceiptState}:
             state_name = ReceiptState.INVALID.value
         self._reply(conn, state, state_name)
+
+    def _reply_alive(self, conn: socket.socket, state: _Connection, request: Envelope) -> None:
+        """Answer a DISCOVER challenge with an ALIVE envelope carrying the
+        exact identity of THIS listener (REM-107).
+
+        The ALIVE reply embeds the request's nonce (``conversation_id`` is
+        used as the opaque nonce channel) so the requester can compare it
+        exactly, plus peer/instance/session/protocol/status.
+        """
+        from .models import PeerIdentity, make_envelope
+
+        # The DISCOVER envelope's sender identifies the requester; the
+        # recipient_peer_id is the peer being probed. Nonce rides in
+        # conversation_id (opaque, single-use per probe).
+        nonce = request.conversation_id or ""
+        record = self._peers.get(request.recipient_peer_id)
+        if record is None:
+            self._reply(conn, state, ReceiptState.UNREACHABLE.value, "no such peer here")
+            return
+        zero = "00000000-0000-0000-0000-000000000000"
+        # Encode identity fields in content as canonical JSON so the
+        # requester can verify them exactly.
+        import json as _json
+
+        identity = _json.dumps(
+            {
+                "nonce": nonce,
+                "peer_id": record.peer_id,
+                "instance_id": record.instance_id,
+                "session_id": record.session_id,
+                "protocol": record.protocol,
+                "status": record.status,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        reply = make_envelope(
+            sender=PeerIdentity(peer_id=record.peer_id, name=record.name, profile=record.profile),
+            recipient_peer_id=request.sender.peer_id or zero,
+            kind=Kind.ALIVE,
+            content=identity,
+            conversation_id=nonce,
+        )
+        try:
+            from .codec import encode_frame
+
+            state.out_buffer.extend(encode_frame(encode_envelope(reply)))
+            self._flush(conn, state)
+        except Exception:  # noqa: BLE001
+            self._drop_connection(conn)
 
     def _reply(self, conn: socket.socket, state: _Connection, content: str, detail: str = "") -> None:
         from .models import PeerIdentity, make_envelope

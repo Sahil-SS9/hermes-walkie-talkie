@@ -20,12 +20,19 @@ _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 
 
 class Kind(str, enum.Enum):
-    """Allowed envelope kinds (ADR-0003)."""
+    """Allowed envelope kinds (ADR-0003).
+
+    ``discover``/``alive`` are the control kinds used by the liveness
+    challenge-response (REM-107). They ride the existing framed Unix
+    transport and never create a second control plane.
+    """
 
     PING = "ping"
     PONG = "pong"
     MESSAGE = "message"
     RECEIPT = "receipt"
+    DISCOVER = "discover"
+    ALIVE = "alive"
 
 
 class ReceiptState(str, enum.Enum):
@@ -98,7 +105,13 @@ class PeerIdentity:
 
 @dataclass(frozen=True, slots=True)
 class PeerRecord:
-    """One registry entry describing a live peer (AP-403..AP-405)."""
+    """One registry entry describing a live peer (AP-403..AP-405, REM-105).
+
+    ``socket_uid`` and ``socket_inode`` are captured from the actual bound
+    listener before publication (registration order, REM-106) and are used
+    by the discovery fence (REM-108/111) to refuse cleanup of a replaced or
+    mismatched socket.
+    """
 
     peer_id: str
     instance_id: str
@@ -115,12 +128,17 @@ class PeerRecord:
     last_seen: str = ""            # RFC3339 UTC
     status: str = Presence.IDLE.value
     socket_path: str = ""
+    socket_uid: int = 0
+    socket_inode: int = 0
+    protocol: str = PROTOCOL_ID
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "peer_id", _require_uuid("peer_id", self.peer_id))
         object.__setattr__(self, "instance_id", _require_uuid("instance_id", self.instance_id))
         if self.status not in {p.value for p in Presence}:
             raise ValidationError(f"invalid presence status {self.status!r}")
+        if self.protocol != PROTOCOL_ID:
+            raise ValidationError(f"unsupported protocol {self.protocol!r}")
 
 
 @dataclass(frozen=True, slots=True)

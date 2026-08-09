@@ -20,6 +20,7 @@ import logging
 import os
 from pathlib import Path
 
+from agent_peer.discovery import DiscoveryService
 from agent_peer.identity import AliasStore, generate_instance_id, generate_peer_id, host_metadata
 from agent_peer.models import Envelope, Kind, PeerIdentity, PeerRecord, Presence, ReceiptState
 from agent_peer.paths import RuntimePaths, select_runtime_dir, select_state_dir
@@ -58,6 +59,7 @@ class PeerSessionManager:
         state_dir = select_state_dir()
         self._store = MessageStore(state_dir / "messages.sqlite3")
         self._runtime = PeerRuntimeManager(self._paths, registry=self._registry)
+        self._discovery = DiscoveryService(self._paths, registry=self._registry)
         self._peers: dict[str, PeerRecord] = {}  # session_id -> record
         self._session_to_peer: dict[str, str] = {}  # session_id -> peer_id
         self._peer_handles: dict[str, PeerHandle] = {}
@@ -97,13 +99,18 @@ class PeerSessionManager:
             socket_path="",
         )
         handle = self._runtime.register_peer(record, on_message=self._on_inbound)
-        self._peers[session_id] = record
-        self._session_to_peer[session_id] = record.peer_id
-        self._peer_handles[record.peer_id] = handle
+        # Store the CANONICAL BOUND record (F-02/REM-203): register_peer
+        # publishes a record with socket_path/socket_uid/socket_inode filled
+        # in; every map must hold that exact bound record, never the pre-bind
+        # blank copy.
+        bound = handle.record or record
+        self._peers[session_id] = bound
+        self._session_to_peer[session_id] = bound.peer_id
+        self._peer_handles[bound.peer_id] = handle
         if self._carry_alias:
             carried, self._carry_alias = self._carry_alias, None
             self.set_alias(carried)
-        logger.info("hermes-peer: registered peer %s (%s) on %s", record.name, record.peer_id, surface)
+        logger.info("hermes-peer: registered peer %s (%s) on %s", bound.name, bound.peer_id, surface)
 
     def on_session_end(self, session_id: str, platform: str | None = None, **kwargs) -> None:
         peer_id = self._session_to_peer.get(session_id)
@@ -153,8 +160,25 @@ class PeerSessionManager:
     # Public surface used by tools/commands (P8)
     # ------------------------------------------------------------------
 
-    def list_peers(self) -> list[PeerRecord]:
-        return self._registry.list_peers()
+    def list_peers(self, *, include_self: bool = True) -> list[PeerRecord]:
+        """Return LIVE peers via the discovery service (F-01).
+
+        Cross-process records are discovered and probed; the local handle
+        map is never used as a filter. ``include_self=False`` excludes this
+        process's own peers (used by listing surfaces).
+        """
+        requesting = None
+        if not include_self:
+            # Exclude every peer this process owns (all registered sessions).
+            requesting = next(iter(self._peer_handles), None)
+        return list(self._discovery.list_live_peers(requesting_peer_id=requesting))
+
+    def resolve_target(self, target: str) -> tuple[PeerRecord | None, dict | None]:
+        """Fail-closed target resolution via the discovery service (REM-110)."""
+        return self._discovery.resolve_peer(target)
+
+    def resolve_peer(self, peer_id: str) -> PeerRecord | None:
+        return self._registry.get(peer_id)
 
     def set_alias(self, name: str) -> None:
         """Persist an alias for THIS process's first registered peer."""
@@ -170,9 +194,6 @@ class PeerSessionManager:
 
     def peer_id_for_session(self, session_id: str) -> str | None:
         return self._session_to_peer.get(session_id)
-
-    def resolve_peer(self, peer_id: str) -> PeerRecord | None:
-        return self._registry.get(peer_id)
 
     def _make_envelope(self, *, recipient: str, content: str, reply_to: str | None = None, kind: Kind = Kind.MESSAGE, conversation_id: str | None = None) -> Envelope:
         """Build a validated outbound envelope from this peer's identity."""

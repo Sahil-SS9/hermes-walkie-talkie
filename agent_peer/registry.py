@@ -73,6 +73,9 @@ class Registry:
                 "last_seen": record.last_seen or _now_iso(),
                 "status": record.status,
                 "socket_path": record.socket_path,
+                "socket_uid": record.socket_uid,
+                "socket_inode": record.socket_inode,
+                "protocol": record.protocol,
             }
             self._atomic_write(self._paths.registry_file_for(record.peer_id), data)
 

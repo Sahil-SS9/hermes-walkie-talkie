@@ -81,19 +81,16 @@ def register_tools(ctx) -> None:
 
 
 def peer_list_agents(args: dict) -> str:
-    """Return reachable peers: id, name, profile, surface, cwd/repo, status."""
+    """Return LIVE peers discovered via the discovery service (F-01).
+
+    Cross-process peers are probed through their recorded sockets and listed;
+    the local connection map is never a filter.
+    """
     mgr, err = _manager_or_error()
     if err:
         return json.dumps(err)
     peers = []
-    for record in mgr.list_peers():
-        # Registry records are only listed when their socket is live: the
-        # runtime registers every listed peer with a bound socket, and
-        # stale entries (dead PID + failed handshake) are pruned by the
-        # supervisor. A registry-only row without a local handle is never
-        # reachable and therefore never listed here.
-        if record.peer_id not in mgr._peer_handles:
-            continue
+    for record in mgr.list_peers():  # discovery: all live peers, incl. same-process
         peers.append(
             {
                 "peer_id": record.peer_id,
@@ -110,19 +107,13 @@ def peer_list_agents(args: dict) -> str:
 
 
 def _resolve_target(mgr, target: str) -> tuple:
-    """Resolve target to a peer record; (record, None) or (None, error)."""
-    record = mgr.resolve_peer(target)
-    if record is not None:
-        return record, None
-    # Name resolution: exact match; ambiguity is reported, never guessed.
-    matches = [r for r in mgr.list_peers() if r.name == target]
-    if not matches:
-        return None, {"error": f"no reachable peer named or identified by {target!r}"}
-    if len(matches) > 1:
-        return None, {
-            "error": f"ambiguous target {target!r}: {len(matches)} peers share this name; use an exact peer_id"
-        }
-    return matches[0], None
+    """Resolve target to a live peer record; (record, None) or (None, error).
+
+    Uses the discovery service's fail-closed resolver: exact peer ID, exact
+    live session ID, ``name~shortID``, or a unique bare name. Collisions
+    return every candidate and never pick the first.
+    """
+    return mgr.resolve_target(target)
 
 
 def peer_send_message(args: dict) -> str:

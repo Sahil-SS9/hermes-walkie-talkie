@@ -117,7 +117,11 @@ ctx = Ctx()
 register(ctx)
 mgr = get_manager()
 mgr.on_session_start(os.environ["SESSION_ID"], platform="cli")
-print("READY " + mgr.list_peers()[0].peer_id, flush=True)
+# The discovery service lists ALL live peers (including cross-process ones),
+# so [0] is not guaranteed to be this process's own peer. Use the exact
+# session's peer id for the READY line (F-01/REM-203).
+_my_peer = mgr.peer_id_for_session(os.environ["SESSION_ID"])
+print("READY " + _my_peer, flush=True)
 for line in sys.stdin:
     line = line.strip()
     if line == "EXIT":
