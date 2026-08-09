@@ -150,9 +150,9 @@ def main() -> int:
     ng_checked: set[str] = set()
     ng_unchecked: set[str] = set()
 
-    acc_start = next((i for i, l in enumerate(lines) if l.startswith("## 9. Release acceptance checklist")), -1)
-    nogo_start = next((i for i, l in enumerate(lines) if l.startswith("## 10. No-go blockers")), -1)
-    ledger_start = next((i for i, l in enumerate(lines) if l.startswith("## 13. Progress ledger")), -1)
+    acc_start = next((i for i, line in enumerate(lines) if line.startswith("## 9. Release acceptance checklist")), -1)
+    nogo_start = next((i for i, line in enumerate(lines) if line.startswith("## 10. No-go blockers")), -1)
+    ledger_start = next((i for i, line in enumerate(lines) if line.startswith("## 13. Progress ledger")), -1)
     if acc_start < 0 or nogo_start < 0 or ledger_start < 0:
         fail("plan structure: cannot locate acceptance/no-go/ledger sections")
 
@@ -208,14 +208,14 @@ def main() -> int:
         fail(f"checked no-go blocker {ng}")
 
     # Status line.
-    status_line = next((l for l in lines if l.startswith("**Status:**")), "")
+    status_line = next((line for line in lines if line.startswith("**Status:**")), "")
     if "COMPLETE" not in status_line.upper():
         fail(f"plan Status line does not record COMPLETE: {status_line!r}")
 
     # ------------------------------------------------------------------
     # 2. Ledger evidence for every checked task (REM-007)
     # ------------------------------------------------------------------
-    ledger_rows = [l for l in lines[ledger_start:] if l.startswith("|")]
+    ledger_rows = [line for line in lines[ledger_start:] if line.startswith("|")]
     ledger_ids: set[str] = set()
     for row in ledger_rows:
         cells = row.split("|")
@@ -296,18 +296,14 @@ def main() -> int:
     core_head = check_repo("core", core, manifest["branches"]["core"], manifest["bases"]["core"])
 
     # Packet SHAs must equal live HEADs.
-    if standalone_head and handoff.exists():
-        if standalone_head not in htext:
-            fail(f"HANDOFF.md does not record standalone HEAD {standalone_head}")
-    if standalone_head and verification.exists():
-        if standalone_head not in vtext:
-            fail(f"VERIFICATION.md does not record standalone HEAD {standalone_head}")
-    if core_head and handoff.exists():
-        if core_head not in htext:
-            fail(f"HANDOFF.md does not record core HEAD {core_head}")
-    if core_head and verification.exists():
-        if core_head not in vtext:
-            fail(f"VERIFICATION.md does not record core HEAD {core_head}")
+    if standalone_head and handoff.exists() and standalone_head not in htext:
+        fail(f"HANDOFF.md does not record standalone HEAD {standalone_head}")
+    if standalone_head and verification.exists() and standalone_head not in vtext:
+        fail(f"VERIFICATION.md does not record standalone HEAD {standalone_head}")
+    if core_head and handoff.exists() and core_head not in htext:
+        fail(f"HANDOFF.md does not record core HEAD {core_head}")
+    if core_head and verification.exists() and core_head not in vtext:
+        fail(f"VERIFICATION.md does not record core HEAD {core_head}")
 
     print(f"VERIFIER: {'FAIL' if FAILURES else 'PASS'}")
     if FAILURES:

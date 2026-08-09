@@ -48,7 +48,7 @@ def _make_plan(status: str = "COMPLETE", *, check: dict[str, bool] | None = None
     """Build a complete fake plan. ``check`` overrides specific boxes."""
     check = check or {}
     lines: list[str] = []
-    lines.append(f"# Fake Remediation Plan")
+    lines.append("# Fake Remediation Plan")
     lines.append("")
     lines.append(f"**Status:** {status}")
     lines.append("")
@@ -134,7 +134,7 @@ def disposable(tmp_path: Path):
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-m", "base")
     base = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    assert base == STANDALONE_BASE or True  # disposable base is not the real SHA
+    assert base  # disposable base is a real commit (not the manifest base)
 
     # Final commit carrying the verifier + manifest + plan + packet.
     plan_text = _make_plan()
