@@ -44,6 +44,15 @@ def runtime_dir(tmp_path) -> Path:
 
 
 class TestResolvePeerOrders:
+    def test_exact_uuid_without_live_record_returns_error(self, runtime_dir):
+        from agent_peer.discovery import DiscoveryService
+
+        missing = str(uuid.uuid4())
+        found, err = DiscoveryService(RuntimePaths(runtime_dir)).resolve_peer(missing)
+
+        assert found is None
+        assert err == {"error": f"no live peer with peer_id {missing!r}"}
+
     def test_resolve_by_exact_session_id(self, runtime_dir):
         from agent_peer.discovery import DiscoveryService
 
@@ -163,6 +172,18 @@ class TestRepairFences:
             removed = svc.repair_stale(runtime_dir)
             assert removed == []
             assert reg.get(rec.peer_id) is not None
+        finally:
+            mgr.shutdown()
+
+    def test_repair_keeps_fresh_live_peer(self, runtime_dir):
+        from agent_peer.discovery import DiscoveryService
+
+        mgr, _handle, record = self._make_live_peer(runtime_dir)
+        try:
+            removed = DiscoveryService(RuntimePaths(runtime_dir)).repair_stale(runtime_dir)
+
+            assert removed == []
+            assert Registry(RuntimePaths(runtime_dir)).get(record.peer_id) is not None
         finally:
             mgr.shutdown()
 
@@ -295,3 +316,11 @@ class TestCoverageGuardBranches:
         assert updated is not None
         assert updated.name == "after"
         assert updated.last_seen == current.last_seen
+
+    def test_missing_and_malformed_heartbeats_are_not_fresh(self, runtime_dir):
+        registry = Registry(RuntimePaths(runtime_dir))
+        assert registry.is_fresh(str(uuid.uuid4())) is False
+
+        malformed = _record(last_seen="not-an-rfc3339-timestamp")
+        registry.register(malformed)
+        assert registry.is_fresh(malformed.peer_id) is False
