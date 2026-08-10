@@ -102,15 +102,13 @@ class MessageStore:
         converge on exactly one row, one injection and one state.
         """
         with self._lock:
-            existing = self.get(row["message_id"])
-            if existing is not None:
-                return existing, False
-            self._conn.execute(
+            cur = self._conn.execute(
                 """INSERT INTO messages (
                     message_id, recipient_peer_id, sender_peer_id, kind,
                     content, state, created_at, expires_at, reply_to,
                     conversation_id, delivered_at, hop_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO NOTHING""",
                 (
                     row["message_id"],
                     row["recipient_peer_id"],
@@ -127,7 +125,14 @@ class MessageStore:
                 ),
             )
             self._conn.commit()
-            return None, True
+            if cur.rowcount == 1:
+                return None, True
+            # SQLite's UNIQUE constraint is the cross-process authority. Read
+            # and return the winner's exact persisted receipt after conflict.
+            existing = self.get(row["message_id"])
+            if existing is None:
+                raise sqlite3.IntegrityError("duplicate claim winner disappeared")
+            return existing, False
 
     def record(self, row: dict) -> Receipt:
         """Persist one message row; a duplicate returns the prior receipt.

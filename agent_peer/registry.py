@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -89,43 +90,110 @@ class Registry:
             except FileNotFoundError:
                 return False
 
+    def unregister_if_current(
+        self,
+        peer_id: str,
+        *,
+        expected_instance_id: str,
+        expected_socket_path: str,
+        expected_socket_uid: int,
+        expected_socket_inode: int,
+    ) -> bool:
+        """Remove a record only while its bound authority still matches."""
+        with self._lock:
+            record = self.get(peer_id)
+            if not self._authority_matches(
+                record,
+                expected_instance_id=expected_instance_id,
+                expected_socket_path=expected_socket_path,
+                expected_socket_uid=expected_socket_uid,
+                expected_socket_inode=expected_socket_inode,
+            ):
+                return False
+            return self.unregister(peer_id)
+
     # -- presence ----------------------------------------------------------
 
-    def update_presence(self, peer_id: str, status: Presence | str) -> None:
+    def update_if_current(
+        self,
+        peer_id: str,
+        *,
+        expected_instance_id: str,
+        expected_socket_path: str,
+        expected_socket_uid: int,
+        expected_socket_inode: int,
+        name: str | None = None,
+        status: Presence | str | None = None,
+        touch_last_seen: bool = True,
+    ) -> PeerRecord | None:
+        """Atomically update mutable metadata behind an exact authority fence.
+
+        Identity, session and bound-socket fields are never caller-mutable. A
+        stale writer receives ``None`` and cannot overwrite a replacement.
+        """
         import dataclasses
 
-        status = status.value if isinstance(status, Presence) else status
         with self._lock:
             record = self.get(peer_id)
+            if not self._authority_matches(
+                record,
+                expected_instance_id=expected_instance_id,
+                expected_socket_path=expected_socket_path,
+                expected_socket_uid=expected_socket_uid,
+                expected_socket_inode=expected_socket_inode,
+            ):
+                return None
+            assert record is not None
+            changes: dict[str, object] = {}
+            if name is not None:
+                changes["name"] = name
+            if status is not None:
+                changes["status"] = status.value if isinstance(status, Presence) else str(status)
+            if touch_last_seen:
+                changes["last_seen"] = _now_iso()
+            updated = dataclasses.replace(record, **changes)
+            self.register(updated)
+            return updated
+
+    def update_presence(
+        self,
+        peer_id: str,
+        status: Presence | str,
+        *,
+        expected: PeerRecord | None = None,
+    ) -> PeerRecord | None:
+        with self._lock:
+            record = expected or self.get(peer_id)
             if record is None:
-                return
-            self.register(
-                dataclasses.replace(record, status=status, last_seen=_now_iso())
+                return None
+            return self.update_if_current(
+                peer_id,
+                expected_instance_id=record.instance_id,
+                expected_socket_path=record.socket_path,
+                expected_socket_uid=record.socket_uid,
+                expected_socket_inode=record.socket_inode,
+                status=status,
             )
 
-    def heartbeat(self, peer_id: str) -> None:
+    def heartbeat(self, peer_id: str, *, expected: PeerRecord | None = None) -> PeerRecord | None:
         """Bounded heartbeat write: only refreshes last_seen."""
-        import dataclasses
-
         with self._lock:
-            record = self.get(peer_id)
+            record = expected or self.get(peer_id)
             if record is None:
-                return
-            self.register(dataclasses.replace(record, last_seen=_now_iso()))
+                return None
+            return self.update_if_current(
+                peer_id,
+                expected_instance_id=record.instance_id,
+                expected_socket_path=record.socket_path,
+                expected_socket_uid=record.socket_uid,
+                expected_socket_inode=record.socket_inode,
+                touch_last_seen=True,
+            )
 
     # -- reads -------------------------------------------------------------
 
     def get(self, peer_id: str) -> PeerRecord | None:
-        path = self._paths.registry_file_for(peer_id)
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        try:
-            return PeerRecord(**data)
-        except Exception:
-            logger.debug("skipping corrupt registry entry %s", path)
-            return None
+        return self._read_file(self._paths.registry_file_for(peer_id))
 
     def list_peers(self) -> list[PeerRecord]:
         records: list[PeerRecord] = []
@@ -137,10 +205,25 @@ class Registry:
         return records
 
     def _read_file(self, path: Path) -> PeerRecord | None:
+        fd = -1
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                return None
+            if st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) & 0o077:
+                logger.warning("registry: refusing non-owner-only record %s", path)
+                return None
+            raw = os.read(fd, 65_537)
+            if len(raw) > 65_536:
+                return None
+            data = json.loads(raw.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None
+        finally:
+            if fd >= 0:
+                os.close(fd)
         try:
             return PeerRecord(**data)
         except Exception:
@@ -191,10 +274,32 @@ class Registry:
 
     # -- internals ---------------------------------------------------------
 
+    @staticmethod
+    def _authority_matches(
+        record: PeerRecord | None,
+        *,
+        expected_instance_id: str,
+        expected_socket_path: str,
+        expected_socket_uid: int,
+        expected_socket_inode: int,
+    ) -> bool:
+        return record is not None and (
+            record.instance_id,
+            record.socket_path,
+            record.socket_uid,
+            record.socket_inode,
+        ) == (
+            expected_instance_id,
+            expected_socket_path,
+            expected_socket_uid,
+            expected_socket_inode,
+        )
+
     def _atomic_write(self, path: Path, data: dict) -> None:
         tmp = path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
+            os.fchmod(fd, 0o600)
             os.write(fd, json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8"))
             os.fsync(fd)
         finally:

@@ -72,13 +72,14 @@ class PeerHandle:
 class _Connection:
     """Per-connection selector state."""
 
-    __slots__ = ("sock", "decoder", "out_buffer", "peer_id", "closed")
+    __slots__ = ("sock", "decoder", "out_buffer", "peer_id", "listener_peer_id", "closed")
 
-    def __init__(self, sock: socket.socket) -> None:
+    def __init__(self, sock: socket.socket, listener_peer_id: str) -> None:
         self.sock = sock
         self.decoder = FrameDecoder()
         self.out_buffer = bytearray()
         self.peer_id: str | None = None
+        self.listener_peer_id = listener_peer_id
         self.closed = False
 
 
@@ -103,6 +104,7 @@ class PeerRuntimeManager:
         self._handlers: dict[str, MessageHandler] = {}
         # peer_id -> listening socket (exact ownership, REM-405).
         self._listeners: dict[str, socket.socket] = {}
+        self._listener_owners: dict[socket.socket, str] = {}
         self._lock = threading.RLock()
         self._wakeup_r, self._wakeup_w = os.pipe()
         self._selector.register(self._wakeup_r, selectors.EVENT_READ, "wakeup")
@@ -134,11 +136,12 @@ class PeerRuntimeManager:
         listener is closed/unregistered and no registry record remains.
         """
         with self._lock:
-            socket_path = self._paths.socket_path_for(record.peer_id)
+            socket_path = self._paths.socket_path_for(record.peer_id, record.instance_id)
             self._reclaim_stale_socket(socket_path)
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:
                 sock.bind(str(socket_path))
+                os.chmod(socket_path, 0o600)
                 sock.listen(64)
                 sock.setblocking(False)
                 # Capture the bound socket's UID and inode (REM-105/106).
@@ -156,9 +159,13 @@ class PeerRuntimeManager:
                 self._peers[record.peer_id] = record
                 self._handlers[record.peer_id] = on_message
                 self._listeners[record.peer_id] = sock
-                # Publish AFTER the listener is ready (registration order).
-                self._registry.register(record)
+                self._listener_owners[sock] = record.peer_id
                 self._ensure_thread()
+                if self._thread is None or not self._thread.is_alive():
+                    raise RuntimeError("peer supervisor failed to start")
+                # Publication is the final registration step: the listener and
+                # confirmed supervisor are already ready to answer probes.
+                self._registry.register(record)
                 handle = PeerHandle(
                     peer_id=record.peer_id,
                     socket_path=socket_path,
@@ -176,8 +183,42 @@ class PeerRuntimeManager:
                     socket_path.unlink()
                 self._peers.pop(record.peer_id, None)
                 self._handlers.pop(record.peer_id, None)
-                self._listeners.pop(record.peer_id, None)
+                owned_listener = self._listeners.pop(record.peer_id, None)
+                if owned_listener is not None:
+                    self._listener_owners.pop(owned_listener, None)
+                self._registry.unregister_if_current(
+                    record.peer_id,
+                    expected_instance_id=record.instance_id,
+                    expected_socket_path=record.socket_path,
+                    expected_socket_uid=record.socket_uid,
+                    expected_socket_inode=record.socket_inode,
+                )
+                if not self._peers:
+                    self._stop_event.set()
+                    self._wakeup()
+                    self._join_thread()
                 raise
+
+    def update_record(self, record: PeerRecord) -> bool:
+        """Refresh mutable in-memory metadata behind bound authority."""
+        with self._lock:
+            current = self._peers.get(record.peer_id)
+            if current is None:
+                return False
+            if (
+                current.instance_id,
+                current.socket_path,
+                current.socket_uid,
+                current.socket_inode,
+            ) != (
+                record.instance_id,
+                record.socket_path,
+                record.socket_uid,
+                record.socket_inode,
+            ):
+                return False
+            self._peers[record.peer_id] = record
+            return True
 
     def unregister_peer(self, peer_id: str) -> None:
         """Graceful teardown (REM-406, §4.7 order):
@@ -202,11 +243,16 @@ class PeerRuntimeManager:
             listener = self._listeners.pop(peer_id, None)
             if record is not None:
                 with suppress(Exception):
-                    self._registry.update_presence(peer_id, "closing")
-            socket_path = Path(record.socket_path) if record is not None and record.socket_path else self._paths.socket_path_for(peer_id)
+                    self._registry.update_presence(peer_id, "closing", expected=record)
+            socket_path = (
+                Path(record.socket_path)
+                if record is not None and record.socket_path
+                else self._paths.socket_path_for(peer_id)
+            )
 
             # 2+3. Unregister and close the exact listener FD.
             if listener is not None:
+                self._listener_owners.pop(listener, None)
                 with suppress(Exception):
                     self._selector.unregister(listener)
                 with contextlib.suppress(OSError):
@@ -215,7 +261,7 @@ class PeerRuntimeManager:
             # 4. Close accepted connections belonging to this listener/peer.
             for conn in list(self._connections.keys()):
                 state = self._connections.get(conn)
-                if state is not None and (state.peer_id == peer_id or state.peer_id is None):
+                if state is not None and state.listener_peer_id == peer_id:
                     self._drop_connection(conn)
 
             # 5+6. Compare socket UID/inode with the canonical record, then
@@ -237,7 +283,14 @@ class PeerRuntimeManager:
                     logger.warning("could not stat socket %s", socket_path)
 
             # 7. Remove the exact registry record.
-            self._registry.unregister(peer_id)
+            if record is not None:
+                self._registry.unregister_if_current(
+                    peer_id,
+                    expected_instance_id=record.instance_id,
+                    expected_socket_path=record.socket_path,
+                    expected_socket_uid=record.socket_uid,
+                    expected_socket_inode=record.socket_inode,
+                )
 
             # 8. Stop the supervisor only after the last peer is gone.
             if not self._peers:
@@ -354,7 +407,12 @@ class PeerRuntimeManager:
             with contextlib.suppress(OSError):
                 conn.close()
             return
-        self._connections[conn] = _Connection(conn)
+        listener_peer_id = self._listener_owners.get(listen_sock)
+        if listener_peer_id is None:
+            with contextlib.suppress(OSError):
+                conn.close()
+            return
+        self._connections[conn] = _Connection(conn, listener_peer_id)
         self._selector.register(conn, selectors.EVENT_READ, "conn")
 
     def _service_connection(self, conn: socket.socket) -> None:

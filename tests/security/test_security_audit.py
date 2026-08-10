@@ -113,10 +113,7 @@ class TestSymlinkRaceAudit:
         try:
             # Reclaim on the SAME path while the peer is live: probe-connect
             # succeeds, so the socket must NOT be unlinked.
-            from agent_peer.paths import RuntimePaths
-
-            paths = RuntimePaths(runtime_dir)
-            mgr._reclaim_stale_socket(paths.socket_path_for(handle.peer_id))
+            mgr._reclaim_stale_socket(handle.socket_path)
             assert handle.socket_path.exists()
         finally:
             mgr.shutdown()

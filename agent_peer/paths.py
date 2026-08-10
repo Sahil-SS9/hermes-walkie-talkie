@@ -162,15 +162,23 @@ class RuntimePaths:
     def registry_file_for(self, peer_id: str) -> Path:
         return self.registry_dir / f"{peer_id}.json"
 
-    def socket_path_for(self, peer_id: str, *, must_be_short: bool = False) -> Path:
-        """Deterministic short socket path: 16 hex chars of the peer id hash.
+    def socket_path_for(
+        self,
+        peer_id: str,
+        instance_id: str | None = None,
+        *,
+        must_be_short: bool = False,
+    ) -> Path:
+        """Deterministic short socket path bound to peer and live instance.
 
-        Long enough to be collision-safe for a single user's peers, short
-        enough to fit any sane runtime root under the AF_UNIX bound.
+        ``instance_id`` is mandatory for live registration authority. The
+        optional legacy form remains for diagnostic callers that only have a
+        peer ID, but runtime registration always supplies both values.
         """
         import hashlib
 
-        short = hashlib.sha256(peer_id.encode("utf-8")).hexdigest()[:16]
+        authority = f"{peer_id}\0{instance_id}" if instance_id else peer_id
+        short = hashlib.sha256(authority.encode("utf-8")).hexdigest()[:16]
         path = self.sockets_dir / f"{short}.sock"
         if must_be_short and len(str(path)) > _MAX_SOCKET_PATH:
             raise ConfigurationError(

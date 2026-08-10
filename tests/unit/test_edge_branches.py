@@ -169,14 +169,14 @@ class TestSupervisorEdges:
         runtime_dir, _ = isolated_runtime
         mgr = PeerRuntimeManager(runtime_dir)
         a = _record("a")
-        mgr.register_peer(a, on_message=lambda e: ReceiptState.QUEUED)
+        handle = mgr.register_peer(a, on_message=lambda e: ReceiptState.QUEUED)
         try:
             from agent_peer.codec import encode_envelope, encode_frame
 
             # Raw client asks for a peer that is NOT registered here.
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(2)
-            sock.connect(str(mgr._paths.socket_path_for(a.peer_id)))
+            sock.connect(str(handle.socket_path))
             sender = PeerIdentity(peer_id=a.peer_id, name="a", profile="")
             sock.sendall(encode_frame(encode_envelope(_env(sender, str(uuid.uuid4())))))
             reply = sock.recv(4096)

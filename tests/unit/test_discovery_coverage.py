@@ -173,10 +173,15 @@ class TestRepairFences:
         paths = RuntimePaths(runtime_dir)
         reg = Registry(paths)
         dead = _record(
-            socket_path=str(runtime_dir / "s" / "gone.sock"),
             socket_uid=os.geteuid(),
             socket_inode=0,
             last_seen=(datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+        )
+        import dataclasses
+
+        dead = dataclasses.replace(
+            dead,
+            socket_path=str(paths.socket_path_for(dead.peer_id, dead.instance_id)),
         )
         reg.register(dead)
         svc = DiscoveryService(paths)

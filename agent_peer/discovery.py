@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 import socket
+import stat
 import time
 import uuid as uuidlib
 from contextlib import suppress
@@ -66,7 +68,12 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _parse_record(path: Path, paths: RuntimePaths) -> PeerRecord | None:
+def _parse_record(
+    path: Path,
+    paths: RuntimePaths,
+    *,
+    require_socket: bool = True,
+) -> PeerRecord | None:
     """Parse one registry file into a PeerRecord, or None when invalid.
 
     Validation: filename must equal ``<peer_id>.json``, the embedded peer_id
@@ -77,20 +84,11 @@ def _parse_record(path: Path, paths: RuntimePaths) -> PeerRecord | None:
     if path.suffix != ".json":
         return None
     peer_id_from_name = path.stem
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    record = Registry(paths).get(peer_id_from_name)
+    if record is None:
         return None
-    if not isinstance(data, dict):
-        return None
-    embedded = data.get("peer_id")
-    if embedded != peer_id_from_name:
+    if record.peer_id != peer_id_from_name:
         logger.warning("discovery: registry filename/peer_id mismatch at %s", path)
-        return None
-    try:
-        record = PeerRecord(**data)
-    except Exception:  # noqa: BLE001 - corrupt record is skipped, not fatal
-        logger.warning("discovery: skipping corrupt registry entry %s", path)
         return None
     if record.socket_path:
         sock = Path(record.socket_path)
@@ -109,6 +107,24 @@ def _parse_record(path: Path, paths: RuntimePaths) -> PeerRecord | None:
                 logger.warning("discovery: socket outside runtime root: %s", sock)
                 return None
         except OSError:
+            return None
+        expected = paths.socket_path_for(record.peer_id, record.instance_id)
+        if sock != expected:
+            logger.warning("discovery: socket path does not match peer instance: %s", sock)
+            return None
+        try:
+            sock_st = sock.lstat()
+        except FileNotFoundError:
+            return None if require_socket else record
+        except OSError:
+            return None
+        if not stat.S_ISSOCK(sock_st.st_mode):
+            return None
+        if sock_st.st_uid != os.geteuid() or stat.S_IMODE(sock_st.st_mode) & 0o077:
+            logger.warning("discovery: refusing non-owner-only socket %s", sock)
+            return None
+        if record.socket_uid != sock_st.st_uid or record.socket_inode != sock_st.st_ino:
+            logger.warning("discovery: socket authority mismatch for %s", record.peer_id)
             return None
     return record
 
@@ -162,6 +178,8 @@ def _probe_once(record: PeerRecord) -> dict | None:
             for reply in decoder.feed(chunk):
                 if reply.kind is not Kind.ALIVE:
                     return None
+                if reply.conversation_id != nonce or reply.sender.peer_id != record.peer_id:
+                    return None
                 try:
                     identity = json.loads(reply.content)
                 except json.JSONDecodeError:
@@ -176,7 +194,11 @@ def _probe_once(record: PeerRecord) -> dict | None:
                     return None
                 if identity.get("instance_id") != record.instance_id:
                     return None
+                if identity.get("session_id") != record.session_id:
+                    return None
                 if identity.get("protocol") != record.protocol:
+                    return None
+                if identity.get("status") != record.status:
                     return None
                 return identity
         return None
@@ -196,32 +218,40 @@ class DiscoveryService:
 
     # -- listing ---------------------------------------------------------
 
-    def _snapshot(self) -> list[PeerRecord]:
+    def _snapshot(self, *, require_socket: bool = True) -> list[PeerRecord]:
         """Captured snapshot of all parseable registry records (read-only)."""
         records: list[PeerRecord] = []
         for path in sorted(self._paths.registry_dir.glob("*.json")):
-            record = _parse_record(path, self._paths)
+            record = _parse_record(path, self._paths, require_socket=require_socket)
             if record is not None:
                 records.append(record)
         return records
 
-    def list_live_peers(self, requesting_peer_id: str | None = None) -> tuple[PeerRecord, ...]:
+    def list_live_peers(
+        self,
+        requesting_peer_id: str | None = None,
+        *,
+        requesting_peer_ids: set[str] | frozenset[str] | None = None,
+    ) -> tuple[PeerRecord, ...]:
         """Return every LIVE (probed) peer as an immutable sorted tuple.
 
         Never filters through local connection maps, never mutates the
         registry or sockets. Stable sort: ``(name.casefold(), peer_id)``.
         """
+        excluded = set(requesting_peer_ids or ())
+        if requesting_peer_id is not None:
+            excluded.add(requesting_peer_id)
         live: list[PeerRecord] = []
         for record in self._snapshot():
-            if requesting_peer_id is not None and record.peer_id == requesting_peer_id:
+            if record.peer_id in excluded:
                 continue
             identity = _probe_once(record)
             if identity is None:
                 continue
             # Re-read the record AFTER the probe to catch a replacement
             # (TOCTOU fence for listing).
-            fresh = self._registry.get(record.peer_id)
-            if fresh is None or fresh.instance_id != record.instance_id or fresh.socket_path != record.socket_path:
+            fresh = _parse_record(self._paths.registry_file_for(record.peer_id), self._paths)
+            if fresh is None or fresh != record:
                 continue
             live.append(fresh)
         live.sort(key=lambda r: (r.name.casefold(), r.peer_id))
@@ -244,7 +274,7 @@ class DiscoveryService:
             return None, {"error": "empty target"}
         # 1. Exact peer_id.
         if _looks_like_uuid(target):
-            record = self._registry.get(target)
+            record = _parse_record(self._paths.registry_file_for(target), self._paths)
             if record is not None and self._probe(record):
                 return record, None
             return None, {"error": f"no live peer with peer_id {target!r}"}
@@ -315,7 +345,7 @@ class DiscoveryService:
 
         now = now or datetime.now(UTC)
         removed: list[PeerRecord] = []
-        for record in self._snapshot():
+        for record in self._snapshot(require_socket=False):
             # Only stale candidates are considered.
             last_seen = _parse_iso(record.last_seen)
             if last_seen is not None and (now - last_seen) <= timedelta(seconds=STALE_THRESHOLD) and self._probe(record):

@@ -24,6 +24,7 @@ LINE_MIN = 90.0
 BRANCH_MIN = 85.0
 TRUST_DELIVERY_MODULES = (
     "agent_peer.codec",
+    "agent_peer.discovery",
     "agent_peer.models",
     "agent_peer.policy",
     "agent_peer.registry",

@@ -71,7 +71,6 @@ class PeerSessionManager:
         self._peers: dict[str, PeerRecord] = {}  # session_id -> record
         self._session_to_peer: dict[str, str] = {}  # session_id -> peer_id
         self._peer_handles: dict[str, PeerHandle] = {}
-        self._carry_alias: str | None = None  # explicit alias across rotation
         self._policy = PolicyEngine(policy=self._config.inbound)
         self._session_policies: dict[str, Policy] = {}  # peer_id -> session-scoped policy
 
@@ -87,13 +86,16 @@ class PeerSessionManager:
         Registration persists while the session is open; working/idle are
         turn states set by on_session_start/on_session_end.
         """
+        alias_override = kwargs.pop("_alias_override", None)
         surface = _surface_of(platform)
         existing = self._session_to_peer.get(session_id)
         if existing is not None:
             return
         meta = host_metadata()
         peer_id = generate_peer_id()
-        alias = self._aliases.effective_name(peer_id, default_base=os.path.basename(os.getcwd()) or "session")
+        alias = alias_override or self._aliases.effective_name(
+            peer_id, default_base=os.path.basename(os.getcwd()) or "session"
+        )
         record = PeerRecord(
             peer_id=peer_id,
             instance_id=generate_instance_id(),
@@ -120,9 +122,8 @@ class PeerSessionManager:
         self._peers[session_id] = bound
         self._session_to_peer[session_id] = bound.peer_id
         self._peer_handles[bound.peer_id] = handle
-        if self._carry_alias:
-            carried, self._carry_alias = self._carry_alias, None
-            self.set_alias(carried, session_id=session_id)
+        if alias_override:
+            self._aliases.set_alias(bound.peer_id, alias_override)
         logger.info("hermes-peer: opened peer %s (%s) on %s", bound.name, bound.peer_id, surface)
 
     def on_session_start(self, session_id: str, platform: str | None = None, **kwargs) -> None:
@@ -135,30 +136,28 @@ class PeerSessionManager:
         """
         existing = self._session_to_peer.get(session_id)
         if existing is not None:
-            self._registry.update_presence(existing, Presence.WORKING)
-            self._refresh_local_presence(session_id, Presence.WORKING)
+            self._set_presence(session_id, Presence.WORKING)
             return
         # Legacy host: no on_session_open fired — register here (idle then
         # immediately working) to preserve the old contract.
         self.on_session_open(session_id, platform=platform, **kwargs)
-        peer_id = self._session_to_peer.get(session_id)
-        if peer_id is not None:
-            self._registry.update_presence(peer_id, Presence.WORKING)
-            self._refresh_local_presence(session_id, Presence.WORKING)
+        if self._session_to_peer.get(session_id) is not None:
+            self._set_presence(session_id, Presence.WORKING)
 
-    def _refresh_local_presence(self, session_id: str, status: Presence) -> None:
-        """Update the in-memory bound record's status to match the registry."""
-        import dataclasses
-
+    def _set_presence(self, session_id: str, status: Presence) -> None:
+        """Fence and synchronise registry/runtime/session metadata."""
         rec = self._peers.get(session_id)
-        if rec is not None:
-            self._peers[session_id] = dataclasses.replace(rec, status=status.value)
+        if rec is None:
+            return
+        updated = self._registry.update_presence(rec.peer_id, status, expected=rec)
+        if updated is None:
+            return
+        self._runtime.update_record(updated)
+        self._peers[session_id] = updated
 
     def on_session_end(self, session_id: str, platform: str | None = None, **kwargs) -> None:
-        peer_id = self._session_to_peer.get(session_id)
-        if peer_id is not None:
-            self._registry.update_presence(peer_id, Presence.IDLE)
-            self._refresh_local_presence(session_id, Presence.IDLE)
+        if self._session_to_peer.get(session_id) is not None:
+            self._set_presence(session_id, Presence.IDLE)
 
     def on_session_reset(self, session_id: str, platform: str | None = None, **kwargs) -> None:
         """Session rotation: close the EXACT old registration, register the new id.
@@ -184,6 +183,7 @@ class PeerSessionManager:
 
     def _rotate_session(self, old_session: str, new_session: str, platform: str | None = None, **kwargs) -> None:
         """Finalise exactly one old session and register the new one."""
+        explicit_alias: str | None = None
         peer_id = self._session_to_peer.pop(old_session, None)
         if peer_id is not None:
             handle = self._peer_handles.pop(peer_id, None)
@@ -192,11 +192,13 @@ class PeerSessionManager:
             old_record = self._peers.pop(old_session, None)
             self._session_policies.pop(peer_id, None)
             if old_record is not None and old_record.name:
-                explicit = self._aliases.get_alias(old_record.peer_id)
-                if explicit:
-                    # Carry the explicit alias forward to the rotated session.
-                    self._carry_alias = explicit
-        self.on_session_start(new_session, platform=platform, **kwargs)
+                explicit_alias = self._aliases.get_alias(old_record.peer_id)
+        self.on_session_start(
+            new_session,
+            platform=platform,
+            _alias_override=explicit_alias,
+            **kwargs,
+        )
 
     def on_session_finalize(self, session_id: str, platform: str | None = None, reason: str = "shutdown", **kwargs) -> None:
         peer_id = self._session_to_peer.pop(session_id, None)
@@ -226,11 +228,8 @@ class PeerSessionManager:
         map is never used as a filter. ``include_self=False`` excludes this
         process's own peers (used by listing surfaces).
         """
-        requesting = None
-        if not include_self:
-            # Exclude every peer this process owns (all registered sessions).
-            requesting = next(iter(self._peer_handles), None)
-        return list(self._discovery.list_live_peers(requesting_peer_id=requesting))
+        requesting = frozenset(self._peer_handles) if not include_self else None
+        return list(self._discovery.list_live_peers(requesting_peer_ids=requesting))
 
     def resolve_target(self, target: str) -> tuple[PeerRecord | None, dict | None]:
         """Fail-closed target resolution via the discovery service (REM-110)."""
@@ -251,8 +250,6 @@ class PeerSessionManager:
 
     def set_alias(self, name: str, session_id: str | None = None) -> None:
         """Persist an alias for the exact invoking session (F-03/REM-205)."""
-        import dataclasses
-
         # Backwards-compatible single-session fallback: when exactly one
         # session is registered and none is named, use it (documented).
         if session_id is None:
@@ -261,10 +258,18 @@ class PeerSessionManager:
             else:
                 raise ValueError("no session_id supplied and multiple sessions active")
         rec = self._require_session(session_id)
+        renamed = self._registry.update_if_current(
+            rec.peer_id,
+            expected_instance_id=rec.instance_id,
+            expected_socket_path=rec.socket_path,
+            expected_socket_uid=rec.socket_uid,
+            expected_socket_inode=rec.socket_inode,
+            name=name,
+        )
+        if renamed is None:
+            raise RuntimeError("peer authority changed during alias update")
         self._aliases.set_alias(rec.peer_id, name)
-        renamed = dataclasses.replace(rec, name=name)
-        # Preserve the canonical bound socket/instance authority (F-02).
-        self._registry.register(renamed)
+        self._runtime.update_record(renamed)
         self._peers[session_id] = renamed
 
     def peer_id_for_session(self, session_id: str) -> str | None:
@@ -457,13 +462,20 @@ class PeerSessionManager:
 
     def set_alias_for(self, peer_id: str, name: str) -> None:
         """Persist an alias for an exact peer id (used by tools/tests)."""
-        import dataclasses
-
-        self._aliases.set_alias(peer_id, name)
         record = self._registry.get(peer_id)
         if record is not None:
-            renamed = dataclasses.replace(record, name=name)
-            self._registry.register(renamed)
+            renamed = self._registry.update_if_current(
+                peer_id,
+                expected_instance_id=record.instance_id,
+                expected_socket_path=record.socket_path,
+                expected_socket_uid=record.socket_uid,
+                expected_socket_inode=record.socket_inode,
+                name=name,
+            )
+            if renamed is None:
+                return
+            self._aliases.set_alias(peer_id, name)
+            self._runtime.update_record(renamed)
             for session_id, rec in self._peers.items():
                 if rec.peer_id == peer_id:
                     self._peers[session_id] = renamed
