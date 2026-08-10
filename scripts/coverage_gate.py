@@ -2,10 +2,15 @@
 """Deterministic coverage gate (SEC-1015).
 
 Runs the full suite with branch coverage and asserts:
-- >= 90% LINE coverage across agent_peer + hermes_peer;
-- >= 85% BRANCH coverage on the trust/delivery path modules — the
+- >= 90% line coverage across agent_peer + hermes_peer;
+- >= 85% branch coverage on the trust/delivery path modules — the
   components that handle untrusted wire input and message delivery:
-  codec, models, policy, registry, runtime, store, transport, delivery.
+  codec, discovery, models, policy, registry, runtime, store, transport,
+  delivery.
+
+The gate consumes coverage.py's JSON counters. The terminal ``Cover`` column
+combines statements and branches and ``BrPart`` is only partial branches, so
+neither is a valid numerator for these two independent contracts.
 
 Usage:
     uv run python scripts/coverage_gate.py
@@ -13,12 +18,14 @@ Usage:
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
-from contextlib import suppress
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+REPORT = REPO / ".coverage-gate.json"
 
 LINE_MIN = 90.0
 BRANCH_MIN = 85.0
@@ -35,81 +42,117 @@ TRUST_DELIVERY_MODULES = (
 )
 
 
+def _module_summary(files: dict, module: str) -> dict | None:
+    key = module.replace(".", "/") + ".py"
+    row = files.get(key)
+    if row is None:
+        row = next((value for path, value in files.items() if path.endswith(key)), None)
+    if not isinstance(row, dict):
+        return None
+    summary = row.get("summary")
+    return summary if isinstance(summary, dict) else None
+
+
 def main() -> int:
+    REPORT.unlink(missing_ok=True)
     cmd = [
-        sys.executable, "-m", "pytest", "-q", "--no-header",
-        "--cov=agent_peer", "--cov=hermes_peer", "--cov-branch",
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--no-header",
+        "--cov=agent_peer",
+        "--cov=hermes_peer",
+        "--cov-branch",
         "--cov-report=term",
+        f"--cov-report=json:{REPORT}",
     ]
-    proc = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=1800)
+    env = dict(os.environ)
+    import_roots = [str(REPO)]
+    core_root = env.get("HERMES_CORE_ROOT", "").strip()
+    if core_root:
+        import_roots.append(core_root)
+    inherited = env.get("PYTHONPATH", "").strip()
+    if inherited:
+        import_roots.append(inherited)
+    env["PYTHONPATH"] = os.pathsep.join(import_roots)
+
+    proc = subprocess.run(
+        cmd,
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
     out = proc.stdout + proc.stderr
     failures: list[str] = []
+    if proc.returncode != 0:
+        failures.append(f"test suite exited {proc.returncode}")
 
-    # Parse the per-module table.
-    per_module: dict[str, dict] = {}
-    totals: dict = {}
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) == 6 and parts[0].endswith(".py"):
-            try:
-                per_module[parts[0]] = {
-                    "stmts": int(parts[1]), "miss": int(parts[2]),
-                    "branch": int(parts[3]), "brpart": int(parts[4]),
-                    "cover": float(parts[5].rstrip("%")),
-                }
-            except ValueError:
-                continue
-        if line.startswith("TOTAL"):
-            parts = line.split()
-            if len(parts) >= 6:
-                with suppress(ValueError):
-                    totals = {
-                        "stmts": int(parts[1]), "miss": int(parts[2]),
-                        "branch": int(parts[3]), "brpart": int(parts[4]),
-                        "cover": float(parts[5].rstrip("%")),
-                    }
+    try:
+        payload = json.loads(REPORT.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        print(out[-5000:])
+        print(f"COVERAGE GATE: FAIL (invalid JSON report: {exc})")
+        return 1
+    finally:
+        REPORT.unlink(missing_ok=True)
 
-    if not totals:
-        print(out[-3000:])
-        print("COVERAGE GATE: FAIL (could not parse coverage output)")
+    totals = payload.get("totals", {})
+    files = payload.get("files", {})
+    num_statements = int(totals.get("num_statements", 0))
+    covered_lines = int(totals.get("covered_lines", 0))
+    if num_statements <= 0:
+        print(out[-5000:])
+        print("COVERAGE GATE: FAIL (no measured statements)")
         return 1
 
-    line_pct = totals["cover"]
+    line_pct = 100.0 * covered_lines / num_statements
     if line_pct < LINE_MIN:
         failures.append(f"line coverage {line_pct:.1f}% < {LINE_MIN}%")
 
-    # Branch coverage on trust/delivery path modules only.
     branch_total = 0
-    branch_partial = 0
-    missing: list[str] = []
-    for mod in TRUST_DELIVERY_MODULES:
-        # The report key is the file path (e.g. agent_peer/codec.py).
-        key = mod.replace(".", "/") + ".py"
-        row = per_module.get(key)
-        if row is None:
-            # Module may not have been imported; fall back to searching the
-            # table for the file name.
-            row = next((r for k, r in per_module.items() if k.endswith(key)), None)
-        if row is None:
-            failures.append(f"coverage row missing for {mod}")
+    branch_covered = 0
+    detail: list[str] = []
+    for module in TRUST_DELIVERY_MODULES:
+        summary = _module_summary(files, module)
+        if summary is None:
+            failures.append(f"coverage row missing for {module}")
             continue
-        branch_total += row["branch"]
-        branch_partial += row["brpart"]
-        missing.append(f"{mod}: {row['branch'] - row['brpart']}/{row['branch']} branches")
-    if branch_total:
-        branch_pct = 100.0 * (branch_total - branch_partial) / branch_total
-        if branch_pct < BRANCH_MIN:
-            failures.append(f"trust/delivery branch coverage {branch_pct:.1f}% < {BRANCH_MIN}%")
-        print(f"trust/delivery branch coverage: {branch_pct:.1f}% ({branch_total - branch_partial}/{branch_total})")
-        for m in missing:
-            print(f"  {m}")
+        module_total = int(summary.get("num_branches", 0))
+        module_covered = int(summary.get("covered_branches", 0))
+        branch_total += module_total
+        branch_covered += module_covered
+        detail.append(f"{module}: {module_covered}/{module_total} branches")
 
-    print(f"overall line coverage: {line_pct:.1f}%")
+    if branch_total <= 0:
+        failures.append("trust/delivery branch denominator is zero")
+        branch_pct = 0.0
+    else:
+        branch_pct = 100.0 * branch_covered / branch_total
+        if branch_pct < BRANCH_MIN:
+            failures.append(
+                f"trust/delivery branch coverage {branch_pct:.1f}% < {BRANCH_MIN}%"
+            )
+
+    print(
+        "trust/delivery branch coverage: "
+        f"{branch_pct:.1f}% ({branch_covered}/{branch_total})"
+    )
+    for row in detail:
+        print(f"  {row}")
+    print(f"overall line coverage: {line_pct:.1f}% ({covered_lines}/{num_statements})")
+
     if failures:
+        if proc.returncode != 0:
+            print("\n--- pytest tail ---")
+            print(out[-5000:])
         print("COVERAGE GATE: FAIL")
-        for f in failures:
-            print(f"  - {f}")
+        for failure in failures:
+            print(f"  - {failure}")
         return 1
+
     print("COVERAGE GATE: PASS")
     return 0
 

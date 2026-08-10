@@ -21,6 +21,10 @@ HERMES_BIN = Path(os.environ.get("HERMES_BIN", "/home/kensei/.local/bin/hermes")
 def _hermes_env(home: Path) -> dict:
     env = dict(os.environ)
     env["HERMES_HOME"] = str(home)
+    # The clone-style install must be the only repository source. Coverage and
+    # orchestration harnesses may inject their own checkout into PYTHONPATH,
+    # which would make a deleted clone reappear as an entry-point plugin.
+    env.pop("PYTHONPATH", None)
     return env
 
 
@@ -97,6 +101,7 @@ class TestRealBinarySmoke:
         #    seam is exercised via inject_message). No model call happens.
         script = r"""
 import os, sys
+sys.path.insert(0, os.environ["PLUGIN_DIR"])
 from hermes_peer.plugin import register, get_manager
 
 class Ctx:

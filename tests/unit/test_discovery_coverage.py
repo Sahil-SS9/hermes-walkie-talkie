@@ -191,6 +191,35 @@ class TestRepairFences:
 
 
 class TestParseRecordRejections:
+    def test_non_json_path_is_not_a_registry_record(self, runtime_dir):
+        from agent_peer.discovery import _parse_record
+
+        paths = RuntimePaths(runtime_dir)
+        path = paths.registry_dir / "not-a-record.txt"
+        path.write_text("ignored", encoding="utf-8")
+        assert _parse_record(path, paths) is None
+
+    def test_regular_file_cannot_stand_in_for_bound_socket(self, runtime_dir):
+        import dataclasses
+
+        from agent_peer.discovery import _parse_record
+
+        paths = RuntimePaths(runtime_dir)
+        registry = Registry(paths)
+        record = _record()
+        socket_path = paths.socket_path_for(record.peer_id, record.instance_id)
+        socket_path.write_text("not a socket", encoding="utf-8")
+        socket_path.chmod(0o600)
+        socket_stat = socket_path.stat()
+        bound = dataclasses.replace(
+            record,
+            socket_path=str(socket_path),
+            socket_uid=socket_stat.st_uid,
+            socket_inode=socket_stat.st_ino,
+        )
+        registry.register(bound)
+        assert _parse_record(paths.registry_file_for(bound.peer_id), paths) is None
+
     def test_filename_peer_id_mismatch_rejected(self, runtime_dir):
         from agent_peer.discovery import _parse_record
 
@@ -238,3 +267,31 @@ class TestParseRecordRejections:
         bad = paths.registry_dir / f"{uuid.uuid4()}.json"
         bad.write_text("{not json", encoding="utf-8")
         assert _parse_record(bad, paths) is None
+
+
+class TestCoverageGuardBranches:
+    def test_empty_timestamps_fail_closed(self):
+        from agent_peer.discovery import _parse_iso as parse_discovery_iso
+        from agent_peer.registry import _parse_iso as parse_registry_iso
+
+        assert parse_discovery_iso("") is None
+        assert parse_registry_iso("") is None
+
+    def test_fenced_metadata_update_can_preserve_heartbeat(self, runtime_dir):
+        registry = Registry(RuntimePaths(runtime_dir))
+        registry.register(_record(name="before"))
+        current = registry.list_peers()[0]
+
+        updated = registry.update_if_current(
+            current.peer_id,
+            expected_instance_id=current.instance_id,
+            expected_socket_path=current.socket_path,
+            expected_socket_uid=current.socket_uid,
+            expected_socket_inode=current.socket_inode,
+            name="after",
+            touch_last_seen=False,
+        )
+
+        assert updated is not None
+        assert updated.name == "after"
+        assert updated.last_seen == current.last_seen

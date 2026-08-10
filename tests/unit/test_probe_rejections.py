@@ -10,7 +10,10 @@ import threading
 import time
 import uuid
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from agent_peer.models import PeerRecord
 from agent_peer.paths import RuntimePaths
@@ -63,6 +66,64 @@ class _RawSock:
 
 
 class TestProbeRejections:
+    @pytest.mark.parametrize(
+        "tamper",
+        [
+            "kind",
+            "invalid_json",
+            "non_object",
+            "nonce",
+            "peer_id",
+            "instance_id",
+            "session_id",
+            "protocol",
+            "status",
+        ],
+    )
+    def test_probe_rejects_each_mismatched_alive_identity_field(
+        self, tmp_path, monkeypatch, tamper
+    ):
+        from agent_peer.codec import encode_envelope, encode_frame
+        from agent_peer.discovery import _probe_once
+        from agent_peer.models import Kind, PeerIdentity, make_envelope
+
+        monkeypatch.setattr(
+            "agent_peer.discovery.secrets.token_hex", lambda _size: "probe-nonce"
+        )
+        record = _record()
+        identity = {
+            "nonce": "probe-nonce",
+            "peer_id": record.peer_id,
+            "instance_id": record.instance_id,
+            "session_id": record.session_id,
+            "protocol": record.protocol,
+            "status": record.status,
+        }
+        kind = Kind.ALIVE
+        content: str = json.dumps(identity)
+        if tamper == "kind":
+            kind = Kind.MESSAGE
+        elif tamper == "invalid_json":
+            content = "{not-json"
+        elif tamper == "non_object":
+            content = "[]"
+        else:
+            identity[tamper] = f"wrong-{tamper}"
+            content = json.dumps(identity)
+
+        reply = make_envelope(
+            sender=PeerIdentity(peer_id=record.peer_id, name="peer", profile="test"),
+            recipient_peer_id=str(uuid.uuid4()),
+            kind=kind,
+            content=content,
+            conversation_id="probe-nonce",
+        )
+        raw = _RawSock(tmp_path, reply=encode_frame(encode_envelope(reply)))
+        try:
+            assert _probe_once(replace(record, socket_path=str(raw.path))) is None
+        finally:
+            raw.close()
+
     def test_probe_rejects_garbage_reply(self, tmp_path):
         from agent_peer.discovery import _probe_once
 
