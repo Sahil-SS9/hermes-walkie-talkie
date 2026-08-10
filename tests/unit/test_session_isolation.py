@@ -241,3 +241,44 @@ class TestMultiSessionConcurrency:
         # Both sessions still exist and are distinct.
         assert set(mgr._peers.keys()) == {"sess-a", "sess-b"}
         assert mgr._peers["sess-a"].peer_id != mgr._peers["sess-b"].peer_id
+
+
+class TestExactTurnLifecycle:
+    """F-09/REM-304/305/308: open A/B, work A, idle A, reset A->A2,
+    finalise B — each event affects only its exact peer."""
+
+    def test_open_then_turn_lifecycle_is_exact(self, env):
+        mgr = get_manager()
+        mgr.on_session_open("sess-a", platform="cli")
+        mgr.on_session_open("sess-b", platform="cli")
+        # Registration exists before any turn (idle).
+        assert mgr._peers["sess-a"].status == "idle"
+        assert mgr._peers["sess-b"].status == "idle"
+        # Turn start marks only A working.
+        mgr.on_session_start("sess-a", platform="cli")
+        assert mgr._peers["sess-a"].status == "working"
+        assert mgr._peers["sess-b"].status == "idle"
+        # Turn end marks A idle, B untouched.
+        mgr.on_session_end("sess-a", platform="cli")
+        assert mgr._peers["sess-a"].status == "idle"
+        assert mgr._peers["sess-b"].status == "idle"
+
+    def test_reset_rotates_only_old_session(self, env):
+        mgr = get_manager()
+        mgr.on_session_open("sess-a", platform="cli")
+        mgr.on_session_open("sess-b", platform="cli")
+        rec_b = mgr._peers["sess-b"]
+        mgr.on_session_reset("sess-a2", platform="cli", old_session_id="sess-a")
+        assert "sess-a" not in mgr._peers
+        assert "sess-a2" in mgr._peers
+        assert mgr._peers["sess-b"].peer_id == rec_b.peer_id
+        assert mgr._peers["sess-b"].status == "idle"
+
+    def test_finalise_only_exact_session(self, env):
+        mgr = get_manager()
+        mgr.on_session_open("sess-a", platform="cli")
+        mgr.on_session_open("sess-b", platform="cli")
+        rec_b = mgr._peers["sess-b"]
+        mgr.on_session_finalize("sess-a", platform="cli", reason="close")
+        assert "sess-a" not in mgr._peers
+        assert mgr._peers["sess-b"].peer_id == rec_b.peer_id

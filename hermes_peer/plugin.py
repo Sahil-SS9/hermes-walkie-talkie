@@ -62,6 +62,7 @@ def register(ctx) -> None:
     config = PeerConfig.load(ctx)
     manager = PeerSessionManager(ctx, config=config)
 
+    ctx.register_hook("on_session_open", manager.on_session_open)
     ctx.register_hook("on_session_start", manager.on_session_start)
     ctx.register_hook("on_session_end", manager.on_session_end)
     ctx.register_hook("on_session_reset", manager.on_session_reset)

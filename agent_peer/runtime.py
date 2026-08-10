@@ -101,6 +101,8 @@ class PeerRuntimeManager:
         self._peers: dict[str, PeerRecord] = {}
         self._connections: dict[socket.socket, _Connection] = {}
         self._handlers: dict[str, MessageHandler] = {}
+        # peer_id -> listening socket (exact ownership, REM-405).
+        self._listeners: dict[str, socket.socket] = {}
         self._lock = threading.RLock()
         self._wakeup_r, self._wakeup_w = os.pipe()
         self._selector.register(self._wakeup_r, selectors.EVENT_READ, "wakeup")
@@ -153,6 +155,7 @@ class PeerRuntimeManager:
                 self._selector.register(sock, selectors.EVENT_READ, "listen")
                 self._peers[record.peer_id] = record
                 self._handlers[record.peer_id] = on_message
+                self._listeners[record.peer_id] = sock
                 # Publish AFTER the listener is ready (registration order).
                 self._registry.register(record)
                 self._ensure_thread()
@@ -173,19 +176,70 @@ class PeerRuntimeManager:
                     socket_path.unlink()
                 self._peers.pop(record.peer_id, None)
                 self._handlers.pop(record.peer_id, None)
+                self._listeners.pop(record.peer_id, None)
                 raise
 
     def unregister_peer(self, peer_id: str) -> None:
-        """Graceful teardown: selector, socket, exact path, registry file."""
+        """Graceful teardown (REM-406, §4.7 order):
+
+        1. mark exact peer closing when its record still matches;
+        2. unregister exact listener FD from selector;
+        3. close exact listener FD;
+        4. close/unregister accepted connections belonging to that
+           listener/peer;
+        5. compare socket UID/inode with the canonical record;
+        6. unlink exact owned socket;
+        7. remove exact matching registry record;
+        8. stop the supervisor only after the last peer is gone;
+        9. close wakeup pipe FDs and selector exactly once on final shutdown.
+
+        A path is never unlinked while an untracked live listener remains
+        bound to it (NG-07).
+        """
         with self._lock:
             record = self._peers.pop(peer_id, None)
             self._handlers.pop(peer_id, None)
+            listener = self._listeners.pop(peer_id, None)
             if record is not None:
                 with suppress(Exception):
                     self._registry.update_presence(peer_id, "closing")
-            socket_path = self._paths.socket_path_for(peer_id)
-            self._unbind_socket(socket_path)
+            socket_path = Path(record.socket_path) if record is not None and record.socket_path else self._paths.socket_path_for(peer_id)
+
+            # 2+3. Unregister and close the exact listener FD.
+            if listener is not None:
+                with suppress(Exception):
+                    self._selector.unregister(listener)
+                with contextlib.suppress(OSError):
+                    listener.close()
+
+            # 4. Close accepted connections belonging to this listener/peer.
+            for conn in list(self._connections.keys()):
+                state = self._connections.get(conn)
+                if state is not None and (state.peer_id == peer_id or state.peer_id is None):
+                    self._drop_connection(conn)
+
+            # 5+6. Compare socket UID/inode with the canonical record, then
+            # unlink ONLY the exact owned socket (never a replacement).
+            if record is not None and record.socket_path:
+                try:
+                    st = socket_path.stat()
+                    if st.st_uid == record.socket_uid and st.st_ino == record.socket_inode:
+                        self._unbind_socket(socket_path)
+                    else:
+                        logger.warning(
+                            "hermes-peer: teardown refused to unlink replaced socket %s "
+                            "(uid/inode mismatch) for %s",
+                            socket_path, peer_id,
+                        )
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.warning("could not stat socket %s", socket_path)
+
+            # 7. Remove the exact registry record.
             self._registry.unregister(peer_id)
+
+            # 8. Stop the supervisor only after the last peer is gone.
             if not self._peers:
                 self._stop_event.set()
                 self._wakeup()
@@ -226,16 +280,27 @@ class PeerRuntimeManager:
         return self._receipt(envelope, ReceiptState.INVALID, f"unexpected reply kind {reply.kind.value}")
 
     def shutdown(self) -> None:
-        """Stop the supervisor and tear down every peer."""
+        """Stop the supervisor and tear down every peer.
+
+        Wakeup pipe FDs and the selector are closed exactly once on final
+        shutdown (REM-406 step 9). Re-entrant shutdown is a no-op.
+        """
         with self._lock:
+            if getattr(self, "_shutdown_done", False):
+                return
             peer_ids = list(self._peers.keys())
             for peer_id in peer_ids:
                 self.unregister_peer(peer_id)
             self._stop_event.set()
             self._wakeup()
             self._join_thread()
+            # Close wakeup pipe FDs exactly once.
+            for fd in (self._wakeup_r, self._wakeup_w):
+                with contextlib.suppress(OSError):
+                    os.close(fd)
             with suppress(Exception):
                 self._selector.close()
+            self._shutdown_done = True
 
     # ------------------------------------------------------------------
     # Supervisor thread

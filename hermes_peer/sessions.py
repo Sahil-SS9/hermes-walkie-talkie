@@ -80,12 +80,16 @@ class PeerSessionManager:
     # inherited thread context, HP-704).
     # ------------------------------------------------------------------
 
-    def on_session_start(self, session_id: str, platform: str | None = None, **kwargs) -> None:
+    def on_session_open(self, session_id: str, platform: str | None = None, **kwargs) -> None:
+        """Host-open: register the peer when the live session is addressable,
+        BEFORE its first model turn (F-09/REM-304/306/308).
+
+        Registration persists while the session is open; working/idle are
+        turn states set by on_session_start/on_session_end.
+        """
         surface = _surface_of(platform)
         existing = self._session_to_peer.get(session_id)
         if existing is not None:
-            # Same session already registered: mark working again.
-            self._registry.update_presence(existing, Presence.WORKING)
             return
         meta = host_metadata()
         peer_id = generate_peer_id()
@@ -104,7 +108,7 @@ class PeerSessionManager:
             git_branch=meta["git_branch"],
             started_at=meta["started_at"],
             last_seen=meta["started_at"],
-            status=Presence.WORKING.value,
+            status=Presence.IDLE.value,
             socket_path="",
         )
         handle = self._runtime.register_peer(record, on_message=self._on_inbound)
@@ -118,13 +122,43 @@ class PeerSessionManager:
         self._peer_handles[bound.peer_id] = handle
         if self._carry_alias:
             carried, self._carry_alias = self._carry_alias, None
-            self.set_alias(carried)
-        logger.info("hermes-peer: registered peer %s (%s) on %s", bound.name, bound.peer_id, surface)
+            self.set_alias(carried, session_id=session_id)
+        logger.info("hermes-peer: opened peer %s (%s) on %s", bound.name, bound.peer_id, surface)
+
+    def on_session_start(self, session_id: str, platform: str | None = None, **kwargs) -> None:
+        """Turn-start: the exact session's peer becomes working.
+
+        Registration is owned by on_session_open; this hook only maps the
+        turn lifecycle to presence (F-09/REM-308). A legacy host that fires
+        on_session_start without on_session_open still registers on first
+        start (backwards compatible).
+        """
+        existing = self._session_to_peer.get(session_id)
+        if existing is not None:
+            self._registry.update_presence(existing, Presence.WORKING)
+            self._refresh_local_presence(session_id, Presence.WORKING)
+            return
+        # Legacy host: no on_session_open fired — register here (idle then
+        # immediately working) to preserve the old contract.
+        self.on_session_open(session_id, platform=platform, **kwargs)
+        peer_id = self._session_to_peer.get(session_id)
+        if peer_id is not None:
+            self._registry.update_presence(peer_id, Presence.WORKING)
+            self._refresh_local_presence(session_id, Presence.WORKING)
+
+    def _refresh_local_presence(self, session_id: str, status: Presence) -> None:
+        """Update the in-memory bound record's status to match the registry."""
+        import dataclasses
+
+        rec = self._peers.get(session_id)
+        if rec is not None:
+            self._peers[session_id] = dataclasses.replace(rec, status=status.value)
 
     def on_session_end(self, session_id: str, platform: str | None = None, **kwargs) -> None:
         peer_id = self._session_to_peer.get(session_id)
         if peer_id is not None:
             self._registry.update_presence(peer_id, Presence.IDLE)
+            self._refresh_local_presence(session_id, Presence.IDLE)
 
     def on_session_reset(self, session_id: str, platform: str | None = None, **kwargs) -> None:
         """Session rotation: close the EXACT old registration, register the new id.
@@ -284,74 +318,67 @@ class PeerSessionManager:
           sender gets the explicit non-success receipt.
 
         Policy is evaluated against the EXACT recipient session (REM-210).
+
+        Duplicate contract (F-06/REM-401/402): the ``message_id`` is claimed
+        atomically under the store lock BEFORE policy evaluation or host
+        delivery. If the row already exists, the exact original persisted
+        ``ReceiptState`` is returned — policy is NOT re-evaluated, the host
+        is NOT re-injected, and prior state is NOT transitioned. Concurrent
+        duplicates converge on one row, one injection and one state.
         """
+        base_row = {
+            "message_id": envelope.message_id,
+            "recipient_peer_id": envelope.recipient_peer_id,
+            "sender_peer_id": envelope.sender.peer_id,
+            "kind": envelope.kind.value,
+            "content": envelope.content,
+            "created_at": envelope.created_at.isoformat(),
+            "expires_at": envelope.expires_at.isoformat(),
+            "reply_to": envelope.reply_to,
+            "conversation_id": envelope.conversation_id,
+            "delivered_at": None,
+            "hop_count": envelope.hop_count,
+        }
+        # Atomic claim: exactly one caller creates the row; every other
+        # concurrent caller sees the existing row and returns its state.
+        claim_row = {**base_row, "state": ReceiptState.QUEUED.value}
+        existing, created = self._store.claim(claim_row)
+        if not created and existing is not None:
+            return ReceiptState(existing["state"])
+
         engine = self._policy_engine_for(envelope.recipient_peer_id)
         engine.register_pending(envelope.recipient_peer_id, self._store.count_pending(envelope.recipient_peer_id))
         decision = engine.evaluate(envelope)
         state = decision.state.value
 
         if decision.action == "drop":
-            self._store.record(
-                {
-                    "message_id": envelope.message_id,
-                    "recipient_peer_id": envelope.recipient_peer_id,
-                    "sender_peer_id": envelope.sender.peer_id,
-                    "kind": envelope.kind.value,
-                    "content": "",
-                    "state": state,
-                    "created_at": envelope.created_at.isoformat(),
-                    "expires_at": envelope.expires_at.isoformat(),
-                    "reply_to": envelope.reply_to,
-                    "conversation_id": envelope.conversation_id,
-                    "delivered_at": None,
-                    "hop_count": envelope.hop_count,
-                }
-            )
+            self._store.transition(envelope.message_id, state)
             return decision.state
 
         if decision.action == "refuse":
-            self._store.record(
-                {
-                    "message_id": envelope.message_id,
-                    "recipient_peer_id": envelope.recipient_peer_id,
-                    "sender_peer_id": envelope.sender.peer_id,
-                    "kind": envelope.kind.value,
-                    "content": "",  # minimal audit metadata only (AP-606)
-                    "state": ReceiptState.REFUSED.value,
-                    "created_at": envelope.created_at.isoformat(),
-                    "expires_at": envelope.expires_at.isoformat(),
-                    "reply_to": envelope.reply_to,
-                    "conversation_id": envelope.conversation_id,
-                    "delivered_at": None,
-                    "hop_count": envelope.hop_count,
-                }
-            )
+            # Minimal audit metadata only (AP-606): drop content.
+            self._store.transition(envelope.message_id, ReceiptState.REFUSED)
+            row = self._store.get(envelope.message_id)
+            if row is not None:
+                self._store._conn.execute(
+                    "UPDATE messages SET content=? WHERE message_id=?",
+                    ("", envelope.message_id),
+                )
+                self._store._conn.commit()
             return ReceiptState.REFUSED
 
         if decision.action == "hold":
-            self._store.record(
-                {
-                    "message_id": envelope.message_id,
-                    "recipient_peer_id": envelope.recipient_peer_id,
-                    "sender_peer_id": envelope.sender.peer_id,
-                    "kind": envelope.kind.value,
-                    "content": envelope.content,
-                    "state": ReceiptState.HELD.value,
-                    "created_at": envelope.created_at.isoformat(),
-                    "expires_at": envelope.expires_at.isoformat(),
-                    "reply_to": envelope.reply_to,
-                    "conversation_id": envelope.conversation_id,
-                    "delivered_at": None,
-                    "hop_count": envelope.hop_count,
-                }
-            )
+            self._store.transition(envelope.message_id, ReceiptState.HELD)
             return ReceiptState.HELD
 
         # accept: forward to the harness; queued only after host acceptance.
         from .delivery import DeliveryAdapter
 
-        accepted = DeliveryAdapter(self._ctx, self).deliver(envelope)
-        return ReceiptState.QUEUED if accepted else ReceiptState.HELD
+        accepted = DeliveryAdapter(self._ctx, self).deliver(envelope, force=True)
+        if not accepted:
+            self._store.transition(envelope.message_id, ReceiptState.HELD)
+            return ReceiptState.HELD
+        return ReceiptState.QUEUED
 
     # ------------------------------------------------------------------
     # Outbound + inbox operations used by tools/commands (P8)

@@ -92,6 +92,43 @@ class MessageStore:
     # Records
     # ------------------------------------------------------------------
 
+    def claim(self, row: dict) -> tuple[dict | None, bool]:
+        """Atomically insert *row* iff the message_id is absent (REM-402).
+
+        Returns ``(existing_row, created)``: if the message already exists,
+        returns the existing row with ``created=False`` and does NOT modify
+        it; otherwise inserts and returns ``(None, True)``. The check and
+        insert share one store-lock critical section, so concurrent callers
+        converge on exactly one row, one injection and one state.
+        """
+        with self._lock:
+            existing = self.get(row["message_id"])
+            if existing is not None:
+                return existing, False
+            self._conn.execute(
+                """INSERT INTO messages (
+                    message_id, recipient_peer_id, sender_peer_id, kind,
+                    content, state, created_at, expires_at, reply_to,
+                    conversation_id, delivered_at, hop_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    row["message_id"],
+                    row["recipient_peer_id"],
+                    row["sender_peer_id"],
+                    row["kind"],
+                    row["content"],
+                    row["state"],
+                    row["created_at"],
+                    row["expires_at"],
+                    row.get("reply_to"),
+                    row.get("conversation_id"),
+                    row.get("delivered_at"),
+                    row.get("hop_count", 0),
+                ),
+            )
+            self._conn.commit()
+            return None, True
+
     def record(self, row: dict) -> Receipt:
         """Persist one message row; a duplicate returns the prior receipt.
 

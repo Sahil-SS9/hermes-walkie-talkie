@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import sqlite3
@@ -59,30 +60,31 @@ class TestPayloadFuzzing:
             mgr.register_peer(a, on_message=lambda e: delivered.append(e.content) or ReceiptState.QUEUED)
             handle_b = mgr.register_peer(b, on_message=lambda e: delivered.append(e.content) or ReceiptState.QUEUED)
 
+            # Malicious input: arbitrary bytes + truncated frame + oversized
+            # prefix. The supervisor may legitimately drop THIS connection
+            # (expected malicious-client disconnect, F-08/REM-408); the
+            # property is that a FRESH healthy connection still works.
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.connect(str(handle_b.socket_path))
             try:
                 sock.sendall(data)
                 sock.sendall(b"\x00\x00\x00\x02\xff")  # truncated frame
                 sock.sendall((2**31).to_bytes(4, "big"))  # oversized prefix
+            except OSError:
+                pass  # the supervisor may have dropped us already
             finally:
-                sock.close()
+                with contextlib.suppress(OSError):
+                    sock.close()
 
-            # The supervisor must still serve a healthy client. Under rapid
-            # supervisor create/destroy churn a first connect can transiently
-            # fail; the property is that the supervisor stays available.
+            # NO retry loop: a fresh healthy connection must prove the
+            # supervisor survived. A single attempt that fails is a product
+            # fault, not a transient to paper over.
             sender = PeerIdentity(peer_id=a.peer_id, name="alpha", profile="")
             env = _envelope(sender, b.peer_id, "still alive")
-            ok = False
-            for _ in range(3):
-                receipt = mgr.send(env)
-                if receipt.state.value == "queued":
-                    ok = True
-                    break
-                time.sleep(0.2)
-            assert ok, "supervisor stopped serving healthy clients after fuzz input"
-            # Adversarial bytes that happen to form a VALID frame are
-            # legitimately delivered; the healthy message must arrive too.
+            receipt = mgr.send(env)
+            assert receipt.state.value == "queued", (
+                f"supervisor stopped serving healthy clients after fuzz input: {receipt.state.value}"
+            )
             assert "still alive" in delivered
         finally:
             mgr.shutdown()

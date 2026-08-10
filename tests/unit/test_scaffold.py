@@ -103,7 +103,7 @@ def test_hermes_peer_plugin_registers_on_supported_host(tmp_path, monkeypatch):
 
     ctx = FakeCtx()
     plugin.register(ctx)
-    assert set(ctx.hooks) == {"on_session_start", "on_session_end", "on_session_reset", "on_session_finalize"}
+    assert set(ctx.hooks) == {"on_session_open", "on_session_start", "on_session_end", "on_session_reset", "on_session_finalize"}
     mgr = plugin.get_manager()
     assert mgr is not None
     mgr.shutdown()
