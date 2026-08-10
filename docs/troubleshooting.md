@@ -42,12 +42,40 @@ or uses insecure paths.
 session cannot bind its socket.
 
 **Behaviour (by design):** a crashed peer's registry entry is removed only
-after the stale threshold (45 s) **and** a failed socket handshake. A new
-process reclaims a stale socket only when nothing listens on it.
+after the stale threshold (45 s) **and** a failed liveness probe. Listing
+never deletes anything; cleanup is a separate, explicit, race-safe
+`repair_stale()` path (startup repair / exact-owner teardown / `hermes peer
+doctor`) that re-reads and compares peer ID, instance ID, registry inode and
+socket inode before mutation and refuses when any value changed, liveness is
+ambiguous, or a live listener remains bound to the socket. A new process
+reclaims a stale socket only when nothing listens on it.
 
-**Fix:** wait for the stale threshold, or remove the entry manually only if
-you are certain the process is dead:
+**Fix:** run `hermes peer doctor` (which performs the bounded repair), wait
+for the stale threshold, or remove the entry manually only if you are certain
+the process is dead:
 `rm ~/.local/state/agent-peer/runtime/registry/<peer_id>.json`.
+
+## Duplicate names
+
+**Symptom:** two peers share the same name and `peer_send_message` by name
+fails.
+
+**Behaviour (by design):** names are mutable display labels only. Exact
+identity is `peer_id` (and the fenced `session_id`). A bare name resolves
+only when exactly one live peer has it; duplicate names return every
+candidate with full metadata. Use the preferred `name~<short-peer-id>`
+handle or the full `peer_id` to disambiguate.
+
+## A peer shows `idle` even after it started working
+
+**Symptom:** a peer's status stays `idle` while it is mid-turn.
+
+**Check:** status reflects the host's turn lifecycle — `on_session_open`
+registers the peer (idle), `on_session_start`/`on_session_end` mark
+working/idle. A host that fires only `on_session_open` (e.g. a headless
+single-query driver without turn hooks) will keep the peer `idle` by design;
+that is a display state, not a liveness claim. Liveness is established by the
+DISCOVER/ALIVE probe, never by status.
 
 ## Peers do not see each other
 

@@ -29,6 +29,27 @@ model, the enforced controls and the non-goals for v1.
 - A peer message never carries executable payloads: JSON only, no
   deserialisation of objects (no pickle, no `__class__` handling).
 
+## Liveness probe boundary
+
+- Discovery probes use the DISCOVER/ALIVE challenge-response over the same
+  `AF_UNIX` framed transport. The nonce is generated with `secrets`, is
+  single-use per probe, and every identity field (peer, instance, session,
+  protocol) is compared exactly. A malformed, mismatched, duplicated or
+  ambiguous authority fails closed and is never listed or routed to.
+- Same-UID `SO_PEERCRED` checks remain mandatory on accepted connections.
+- PID is diagnostic only and never establishes liveness.
+
+## Terminal-control caveat
+
+The inert-control guarantee covers command, approval, shell and file-drop
+dispatch: peer text is conversational input only. It does NOT guarantee that
+terminal escape sequences are inert on TUI surfaces — an injected payload
+containing control characters is delivered verbatim inside the
+`<peer_message>` boundary, so a TUI renderer that interprets escapes could
+still display them. Peer text must therefore be treated as untrusted display
+input on any surface that renders raw control characters. See the review
+packet's DEVIATIONS.md for the exact scope.
+
 ## Bounded resources
 
 - Content ≤ 32 KiB; framed envelope ≤ 64 KiB; the length prefix is validated

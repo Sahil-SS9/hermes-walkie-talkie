@@ -37,11 +37,30 @@ JSON-only, harness-neutral. Locked by ADR-0003.
 | `expires_at` | RFC3339 UTC | after `created_at`; expiry blocks delivery |
 | `sender` | object | `peer_id` (UUID), `name`, `profile` |
 | `recipient_peer_id` | UUID string | exact target peer |
-| `kind` | string | `ping`, `pong`, `message`, `receipt` |
+| `kind` | string | `ping`, `pong`, `message`, `receipt`, `discover`, `alive` |
 | `content` | string | ≤ 32 KiB UTF-8 |
 | `reply_to` | UUID string \| null | correlation to a prior message |
 | `conversation_id` | string \| null | preserved across replies |
 | `hop_count` | integer | 0..4; cap prevents loops |
+
+## Liveness challenge (DISCOVER / ALIVE)
+
+Cross-process discovery probes each candidate through its recorded Unix
+socket using two protocol-v1 control kinds that ride the existing framed
+transport (no second control plane):
+
+- `DISCOVER` — the requester sends an envelope with `kind: discover`, the
+  target peer as `recipient_peer_id`, and a single-use `secrets` nonce in
+  `conversation_id`. The sender identity is the requester.
+- `ALIVE` — the listener replies with `kind: alive`; `content` is canonical
+  JSON carrying `{nonce, peer_id, instance_id, session_id, protocol,
+  status}`. The requester compares the echoed nonce and every identity field
+  exactly against the candidate record; any mismatch fails closed (the
+  candidate is not listed).
+
+PID is diagnostic only and never establishes liveness. Socket UID/inode are
+captured from the actual bound listener at registration and used by the
+repair fence.
 
 ## Receipts
 

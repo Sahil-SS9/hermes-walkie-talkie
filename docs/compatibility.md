@@ -10,10 +10,23 @@
 ctx.inject_message(content, role="user", *, mode="queue", target_session=None) -> bool
 ```
 
-This means a Hermes core commit that includes the P1 delivery seam
-(candidate branch `candidate/hermes-walkie-talkie-p1-20260809`, see the
-Hermes core review packet for the exact commit) or any later commit with the
-same signature.
+plus the generic lifecycle and command-context seams added by the remediation
+candidate:
+
+```python
+# on_session_open lifecycle hook (fires when a live session is addressable,
+# BEFORE its first model turn — distinct from on_session_start)
+ctx.register_hook("on_session_open", handler)
+
+# exact-session command context (opt-in; legacy one-argument handlers
+# remain unchanged)
+def handler(raw_args, *, session_id=None, platform=None, session_target=None): ...
+```
+
+This means a Hermes core commit that includes the P1 delivery seam and the
+remediation lifecycle/context seams (candidate branch
+`candidate/hwt-core-remediation-20260809`, see the remediation review packet
+for the exact commit) or any later commit with the same signatures.
 
 ## Feature detection
 

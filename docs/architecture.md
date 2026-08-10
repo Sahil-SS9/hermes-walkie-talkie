@@ -47,7 +47,10 @@ Two packages:
   - config (`config.py`): `plugins.entries.hermes-peer.settings`
   - sessions (`sessions.py`): lifecycle hooks → peer registrations; host
     targets are opaque `surface:session_id` tokens captured from hook
-    kwargs (never inherited thread context)
+    kwargs (never inherited thread context). `on_session_open` registers a
+    peer while the host session is addressable (idle); `on_session_start` /
+    `on_session_end` map turn activity to working/idle; reset rotates only
+    the exact `old_session_id`
   - delivery (`delivery.py`): `<peer_message>` untrusted boundary marker,
     delivery via `ctx.inject_message(..., mode="queue", target_session=...)`,
     store-level dedup, fail-closed on unknown targets or missing seam
@@ -55,6 +58,30 @@ Two packages:
     `peer_read_inbox`
   - commands (`commands.py`): `/peers`, `/peer-name`, `/peer-policy`,
     `/peer-inbox` and `hermes peer {list|send|inbox|name|policy|doctor}`
+
+## Discovery and identity
+
+- **agent_peer.discovery.DiscoveryService** is the single read-only authority
+  for listing and resolving peers (F-01). It reads a captured snapshot of
+  every parseable registry record, validates filename/peer-ID agreement, safe
+  socket containment, same-UID owner-only modes and the supported protocol,
+  then probes each candidate through its recorded Unix socket with the
+  DISCOVER/ALIVE challenge-response (`secrets` nonce, exact peer/instance/
+  session/protocol comparison, bounded timeouts). Results are an immutable
+  tuple stably sorted by `(name.casefold(), peer_id)`.
+- Listing NEVER filters through the local connection map (`_peer_handles` is
+  a runtime membership map, not a discovery source) and NEVER deletes,
+  renames or rewrites registry/socket files.
+- `resolve_peer(target)` is fail-closed: exact full `peer_id`; exact live
+  `session_id`; `name~<short-peer-id>`; a bare name only when exactly one
+  live peer has it; duplicate names return every candidate with full
+  metadata (name, short/full peer ID, session, profile, surface, cwd/repo,
+  status) — never a first-match pick.
+- `repair_stale()` is the separate, explicit, race-safe cleanup path (startup
+  repair / exact-owner teardown / doctor). It re-reads and compares peer ID,
+  instance ID, registry inode and socket inode immediately before mutation,
+  refuses when any value changed or liveness is ambiguous, and never unlinks
+  a path while a live listener remains bound (NG-07).
 
 ## Process model
 
