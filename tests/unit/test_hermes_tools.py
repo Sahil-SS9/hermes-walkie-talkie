@@ -83,6 +83,12 @@ class TestPeerListAgents:
             for key in ("peer_id", "name", "profile", "surface", "status", "cwd"):
                 assert key in p
 
+    def test_accepts_standard_hermes_dispatch_metadata(self, two_peers):
+        result = json.loads(
+            peer_list_agents({}, session_id="sess-a", task_id="deferred-call-r2")
+        )
+        assert len(result["peers"]) == 2
+
     def test_excludes_unreachable_stale_entries(self, two_peers):
         # A stale registry record without a live socket must not be listed.
         mgr = get_manager()

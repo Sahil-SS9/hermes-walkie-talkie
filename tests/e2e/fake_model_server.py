@@ -3,10 +3,10 @@
 Test-only loopback HTTP server that emulates the OpenAI chat-completions
 surface just enough for the real-Hermes-binary E2E:
 
-- First request: returns a ``peer_list_agents`` tool call so the real agent
-  exercises the plugin tool through the real model-tool registry.
-- Follow-up request (the tool result is sent back): returns a plain text
-  completion so the turn terminates.
+- First three requests exercise Hermes' real deferred-tool protocol:
+  ``tool_search`` -> ``tool_describe`` -> ``tool_call(peer_list_agents)``.
+- The final request echoes the plugin tool result so the parent test can make
+  an exact cross-process identity assertion.
 
 The server requires NO credentials, binds 127.0.0.1 only, and is imported
 exclusively by the test. Production packages never import or open it
@@ -37,25 +37,34 @@ class FakeModelHandler(BaseHTTPRequestHandler):
             return
         messages = payload.get("messages", [])
         stream = bool(payload.get("stream", False))
-        # Count how many tool results have been fed back: if the last message
-        # is a tool result, respond with text; otherwise respond with the
-        # peer_list_agents tool call.
-        last = messages[-1] if messages else {}
-        if last.get("role") == "tool" or (last.get("role") == "assistant" and last.get("tool_calls")):
+        # Hermes exposes deferred plugin tools through three host-owned tools.
+        # Script the exact search -> describe -> call sequence, then echo the
+        # plugin result into the final response.
+        tool_messages = [message for message in messages if message.get("role") == "tool"]
+        if len(tool_messages) >= 3:
+            tool_result = str(tool_messages[-1].get("content") or "")
             response = {
                 "id": "chatcmpl-fake",
                 "object": "chat.completion",
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": "Discovery complete. The peers are listed above."},
+                        "message": {
+                            "role": "assistant",
+                            "content": f"Discovery complete. Tool result: {tool_result}",
+                        },
                         "finish_reason": "stop",
                     }
                 ],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
             }
         else:
-            # First turn: emit a peer_list_agents tool call.
+            deferred_steps = (
+                ("tool_search", {"query": "peer_list_agents", "limit": 5}),
+                ("tool_describe", {"name": "peer_list_agents"}),
+                ("tool_call", {"name": "peer_list_agents", "arguments": {}}),
+            )
+            tool_name, arguments = deferred_steps[len(tool_messages)]
             response = {
                 "id": "chatcmpl-fake-tool",
                 "object": "chat.completion",
@@ -67,9 +76,12 @@ class FakeModelHandler(BaseHTTPRequestHandler):
                             "content": None,
                             "tool_calls": [
                                 {
-                                    "id": "call_fake_1",
+                                    "id": f"call_fake_{len(tool_messages) + 1}",
                                     "type": "function",
-                                    "function": {"name": "peer_list_agents", "arguments": "{}"},
+                                    "function": {
+                                        "name": tool_name,
+                                        "arguments": json.dumps(arguments),
+                                    },
                                 }
                             ],
                         },

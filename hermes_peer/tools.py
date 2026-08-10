@@ -80,7 +80,7 @@ def register_tools(ctx) -> None:
     )
 
 
-def peer_list_agents(args: dict) -> str:
+def peer_list_agents(args: dict, **kwargs) -> str:
     """Return LIVE peers discovered via the discovery service (F-01).
 
     Cross-process peers are probed through their recorded sockets and listed;

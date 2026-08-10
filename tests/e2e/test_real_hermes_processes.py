@@ -18,9 +18,11 @@ packages never import it.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -28,7 +30,7 @@ import pytest
 pytestmark = pytest.mark.e2e
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CORE_ROOT = Path(os.environ.get("HERMES_CORE_ROOT", "/home/kensei/worktrees/hermes-walkie-talkie-core-remediation"))
+CORE_ROOT = Path(os.environ.get("HERMES_CORE_ROOT", "/home/kensei/worktrees/hermes-walkie-talkie-core-remediation-r2"))
 HERMES_PYTHON = os.environ.get("HERMES_PYTHON", "/home/kensei/repos/KenseiAgent/.venv/bin/python")
 
 # Import the sibling fake-model server via explicit file path (test-only).
@@ -93,23 +95,39 @@ def _make_home(tmp_path: Path, name: str) -> Path:
 # model endpoint. It registers via the host on_session_open lifecycle hook
 # (the real Hermes plugin path), then the model issues peer_list_agents.
 _AGENT_DRIVER = r"""
-import os, sys, json
+import os, sys, json, time
 sys.path.insert(0, os.environ["HERMES_CORE_ROOT"])
 sys.path.insert(0, os.environ["PLUGIN_DIR"])
 from run_agent import AIAgent
+from hermes_cli.plugins import discover_plugins, notify_session_open
 
 session_id = os.environ["SESSION_ID"]
 base_url = os.environ["FAKE_MODEL_URL"]
-result = AIAgent(
+discover_plugins()
+agent = AIAgent(
     base_url=base_url,
     model="fake-model",
     api_key="fake",
     enabled_toolsets=["hermes-peer"],
     session_id=session_id,
-).run_conversation("list peer agents and report exactly what you see")
+)
+assert notify_session_open(session_id, "e2e"), "host-open lifecycle did not fire"
+result = agent.run_conversation("list peer agents and report exactly what you see")
+final_response = str(result.get("final_response", ""))
 # The conversation result is the model's text; the peer list was produced by
 # the real peer_list_agents tool inside the agent loop.
-print("AGENT_DONE " + json.dumps(str(result.get("final_response", ""))), flush=True)
+print("AGENT_DONE " + json.dumps(final_response), flush=True)
+ready_file = os.environ.get("READY_FILE")
+if ready_file:
+    with open(ready_file, "w", encoding="utf-8") as handle:
+        handle.write(final_response)
+hold_until = os.environ.get("HOLD_UNTIL")
+if hold_until:
+    deadline = time.monotonic() + 120
+    while not os.path.exists(hold_until) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not os.path.exists(hold_until):
+        raise TimeoutError("release marker was not created")
 """
 
 
@@ -139,28 +157,61 @@ class TestRealHermesProcesses:
         srv = FakeModelServer()
         srv.start()
         try:
-            # Launch agent B first (so A can discover it), then agent A.
-            procs = []
-            for tag, sid, home in (("b", "real-sess-b", home_b), ("a", "real-sess-a", home_a)):
-                env = _subprocess_env(os.environ, home, runtime, state)
-                env["SESSION_ID"] = sid
-                env["FAKE_MODEL_URL"] = srv.base_url
-                p = subprocess.Popen(
-                    [HERMES_PYTHON, "-c", _AGENT_DRIVER],
-                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    cwd="/tmp",  # NOT the standalone repo: its egg-info entry point
-                    # (hermes_peer.plugin:register) would trigger a loader path
-                    # that mis-resolves entry points; the directory-scan path
-                    # (plugin.yaml) is the one the E2E must exercise.
-                )
-                procs.append((tag, p))
+            ready_b = tmp_path / "agent-b.ready"
+            release_b = tmp_path / "agent-b.release"
+            env_b = _subprocess_env(os.environ, home_b, runtime, state)
+            env_b.update(
+                SESSION_ID="real-sess-b",
+                FAKE_MODEL_URL=srv.base_url,
+                READY_FILE=str(ready_b),
+                HOLD_UNTIL=str(release_b),
+            )
+            proc_b = subprocess.Popen(
+                [HERMES_PYTHON, "-c", _AGENT_DRIVER],
+                env=env_b,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd="/tmp",
+            )
+            try:
+                deadline = time.monotonic() + 180
+                while not ready_b.exists() and time.monotonic() < deadline:
+                    assert proc_b.poll() is None, "agent B exited before publishing readiness"
+                    time.sleep(0.05)
+                assert ready_b.exists(), "agent B did not become a live addressable peer"
+                final_b = ready_b.read_text(encoding="utf-8").strip()
+                result_b = json.loads(final_b.split("Tool result: ", 1)[1])
+                assert len(result_b["peers"]) == 1
+                peer_b = result_b["peers"][0]["peer_id"]
 
-            # Both agents complete their conversations (each runs the real
-            # tool pipeline and prints AGENT_DONE).
-            for tag, p in procs:
-                out, err = p.communicate(timeout=180)
-                assert p.returncode == 0, f"agent {tag} failed: {err[-500:]}"
-                assert "AGENT_DONE" in out, f"agent {tag} did not finish: {out[-500:]}"
+                env_a = _subprocess_env(os.environ, home_a, runtime, state)
+                env_a.update(SESSION_ID="real-sess-a", FAKE_MODEL_URL=srv.base_url)
+                proc_a = subprocess.run(
+                    [HERMES_PYTHON, "-c", _AGENT_DRIVER],
+                    env=env_a,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    cwd="/tmp",
+                )
+                assert proc_a.returncode == 0, f"agent A failed: {proc_a.stderr[-1000:]}"
+                final_a = json.loads(
+                    next(
+                        line.removeprefix("AGENT_DONE ")
+                        for line in proc_a.stdout.splitlines()
+                        if line.startswith("AGENT_DONE ")
+                    )
+                )
+                result_a = json.loads(final_a.split("Tool result: ", 1)[1])
+                peer_ids_a = {row["peer_id"] for row in result_a["peers"]}
+                assert len(peer_ids_a) == 2
+                assert peer_b in peer_ids_a
+            finally:
+                release_b.touch(exist_ok=True)
+                out_b, err_b = proc_b.communicate(timeout=30)
+                assert proc_b.returncode == 0, f"agent B failed: {err_b[-1000:]}"
+                assert "AGENT_DONE" in out_b
 
             # The fake model endpoint is test-only: production packages never
             # import it (structural gate).
