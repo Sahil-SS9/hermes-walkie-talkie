@@ -1,42 +1,60 @@
-# Hermes Walkie Talkie — Independent Review Handoff
+# Hermes Walkie Talkie V1.1+ — Independent Review Handoff
 
-Status: UNRELEASED local review candidate (v0.1.0-rc1). Not pushed, not
-published, not activated anywhere. Post-goal: Sahil and/or an independent
-reviewer verify the EXACT candidates below; findings then decide any
-remediation, upstream PR submission, release and live pilot.
+Status: UNRELEASED local review candidate. Not pushed, not published,
+not activated anywhere. Post-goal: Sahil and/or an independent reviewer
+verify the EXACT candidates below; findings then decide remediation,
+upstream PR submission, release and live pilot.
 
 ## Exact candidates
 
 | Repository | Branch | Commit | Clean |
 |---|---|---|---|
-| Hermes Walkie Talkie (standalone) | main | 31fb2caf8b99e1a2ceb1b1a3ad5c413a15572210 | yes |
-| Hermes core candidate (isolated worktree) | candidate/hermes-walkie-talkie-p1-20260809 | 5e7a111b3e748b0cfeb463f536ca52ad0db468fd | yes |
+| Hermes Walkie Talkie (standalone) | feat/hermes-walkie-talkie-v1-1 | 968724b7283fc9cd448d22a89c9728da29ce1cc6 | yes |
+| Hermes core candidate (clean PR worktree) | feat/hermes-peer-v1-1 (draft PR #83661) | 2a853f8681e5aecd8b7059272598c33c17bf9370 | yes |
 
-Canonical Hermes checkout (`/home/kensei/repos/KenseiAgent`): NOT modified by
-this goal (its HEAD may have moved externally; unrelated dirty files were
-untouched). The Hermes core candidate has NOT been merged into it.
+The frozen core worktrees `hermes-walkie-talkie-core-v1-1` and
+`hermes-walkie-talkie-core-v1-pr` both sit at the locked clean draft-PR
+head `2a853f86`. Canonical Hermes checkout (`/home/kensei/repos/KenseiAgent`):
+NOT modified by this goal.
 
 ## What to verify (read-only first)
 
-1. `git status --short` is empty in both repositories above.
-2. `git rev-parse HEAD` matches the table.
-3. From the standalone repo:
-   - `uv run pytest -q` (full suite; host-surface E2E additionally under
-     PYTHONPATH=/home/kensei/worktrees/hermes-walkie-talkie-core)
-   - `uv run ruff check .`, `uv run ty check agent_peer hermes_peer`,
-     `uv build`
-   - `uv run python scripts/coverage_gate.py` (90% line / 85% trust-delivery
-     branch)
-   - `uv run python scripts/verify_goal_completion.py --plan <plan>` (exit 0
-     only at the true final candidate)
-   - `uv run python scripts/demo_two_sessions.py` (two-session demo)
-4. From the core worktree (with the canonical venv python):
-   - the 40 P1 injection tests and `tests/cli/test_quick_commands.py`
-   - full-suite comparison: candidate failures minus baseline failures = 0
-     (baseline worktree at 3f812796bb)
-5. Security: tests/security suite (permissions, symlink races, control
+1. `git status --short` is empty in the standalone and both frozen core
+   worktrees; `git rev-parse HEAD` matches the table.
+2. From the standalone repo:
+   - `uv run pytest -q` (full suite)
+   - `uv run ruff check .`, `uv run ty check agent_peer hermes_peer dashboard`
+   - `uv run python scripts/coverage_gate.py` (90% line / 85% branch over
+     the expanded V1.1 trust module set)
+   - `uv run python scripts/verify_wheel_assets.py`
+   - `uv run python scripts/verify_v1_1_plus_completion.py --plan <plan>`
+     (deterministic; exit 0 only at the true final candidate, exit 2 for
+     known-blocked Windows evidence, never a Markdown verdict)
+3. Security: `tests/security/` suite (permissions, symlink races, control
    injection, fuzzing, flood, concurrency, storage failure, no-TCP, log
-   redaction, static audits).
+   redaction, static audits, Windows owner boundary, busy-target queue-only).
+4. Windows: see `docs/review/WINDOWS_EVIDENCE.md` — native release evidence
+   is BLOCKED on this rig and must stay BLOCKED.
+5. Desktop: see `docs/review/DESKTOP_EVIDENCE.md` — bundle ships in the
+   wheel; live activation inside Hermes Desktop is out of scope here.
+
+## Key V1.1 additions (standalone)
+
+- Stable per-profile `agent_id` (owner-only UUID in HERMES_HOME),
+  protocol negotiation (`agent-peer/1` unchanged, V2 typed payloads),
+  deterministic agent→peer routing.
+- Persistent groups (schema v3) with ownership/revision/caps; bounded
+  broadcasts with an atomic single-writer gate and per-recipient children.
+- Structured request workflows (schema v4): created→queued→accepted→
+  in_progress→completed|failed|refused|cancelled|expired; idempotency
+  keys, correlation, ordered events.
+- Operations observability: content-free metrics, local events, health
+  snapshots, doctor/status remediation.
+- V2 tools + slash commands, tool-schema budget gate, CLI desktop install.
+- Hermes Desktop plugin (React panel + FastAPI router + WS events) and
+  dashboard manifest; wheel ships all assets.
+- Windows named-pipe backend: fail-closed SID/DACL implementation,
+  native-gated tests, evidence BLOCKED.
 
 ## Changed paths (Hermes core candidate)
 

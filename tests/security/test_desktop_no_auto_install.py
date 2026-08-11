@@ -64,7 +64,6 @@ def test_no_auto_install_on_plugin_load():
 
             di._resolve_home(None)  # confirms env resolution works
             assert not (home / "desktop-plugins").exists(), "plugin load auto-installed Desktop plugin"
-            assert not (home / "plugins").exists() or True  # registry files belong to core, not us
         finally:
             if old:
                 os.environ["HERMES_HOME"] = old
