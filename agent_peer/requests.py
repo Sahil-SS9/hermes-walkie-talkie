@@ -39,6 +39,7 @@ class RequestStore:
     def __init__(self, store) -> None:
         self._store = store
         self._conn = store._conn
+        self._columns: tuple[str, ...] | None = None
 
     # -- create ---------------------------------------------------------
 
@@ -208,8 +209,14 @@ class RequestStore:
         )
 
     def _row_dict(self, row) -> dict:
-        cols = [d[0] for d in self._conn.execute("SELECT * FROM requests LIMIT 0").description]
-        return dict(zip(cols, row, strict=False))
+        # Cache the requests column names once (the schema is fixed after
+        # migrations run at MessageStore init); CAREFUL-3 removes a
+        # SELECT * FROM requests LIMIT 0 on every converted row.
+        if self._columns is None:
+            self._columns = tuple(
+                d[0] for d in self._conn.execute("SELECT * FROM requests LIMIT 0").description
+            )
+        return dict(zip(self._columns, row, strict=False))
 
     def _row_to_request(self, row) -> Request:
         data = self._row_dict(row)
