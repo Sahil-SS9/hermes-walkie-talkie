@@ -139,6 +139,9 @@ version = "0.1.0rc1"
 source = { editable = "." }
 
 [package.optional-dependencies]
+dashboard = [
+    { name = "fastapi" },
+]
 windows = [
     { name = "pywin32", marker = "sys_platform == 'win32'" },
 ]
@@ -157,8 +160,11 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pywin32", marker = "sys_platform == 'win32' and extra == 'windows'", specifier = "==310" }]
-provides-extras = ["windows"]
+requires-dist = [
+    { name = "fastapi", marker = "extra == 'dashboard'", specifier = "==0.115.6" },
+    { name = "pywin32", marker = "sys_platform == 'win32' and extra == 'windows'", specifier = "==310" },
+]
+provides-extras = ["windows", "dashboard"]
 
 [package.metadata.requires-dev]
 dev = [
