@@ -108,3 +108,24 @@ PARTIAL only for policy-blocked native-Windows evidence).
 Not implemented: A2A bridge (future), rejected cleanup proposals, fake
 uvicorn server, frozen-core edits, native Windows claim — all per report
 constraints. Windows evidence remains BLOCKED.
+
+## Final-verification remediation (reviewer round 2)
+
+HEAD f96f8b5 was reported with M uv.lock (dashboard extra lockfile,
+uncommitted) and manifest bootstrap lacking --locked. Required fixes:
+
+| Item | Commit |
+|---|---|
+| 1. Validate + commit uv.lock (dashboard extra) | acbcb06 |
+| 2. Manifest bootstrap: uv sync --locked --group dev | c2282cf |
+| 3. Post-gate worktree-clean check in verifier (post-gate-clean) | c2282cf |
+| 4. Mutation regression: tests/security/test_verification_no_mutation.py (verifier ordering, suite-collection no-mutation, --locked enforcement) | c2282cf |
+| 5. Re-run all gates at new SHA c2282cf | — |
+
+Final state at c2282cf265f84dba8148f8e4043840a5165fff8e:
+- git status --porcelain empty after ALL verification commands (0)
+- hermes verify --json: ok:true, bootstrap uv sync --locked --group dev
+  exit 0, test 751 passed / 25 skipped, readiness null (manifest source)
+- deterministic verifier: 13/14 PASS, post-gate-clean PASS, sole failure
+  windows-native-evidence (policy-BLOCKED) — PARTIAL exit 2 as mandated
+- ruff/ty/diff-check clean; coverage 92.8% PASS
