@@ -204,7 +204,6 @@ def client_no_session(monkeypatch):
 def client_inactive(monkeypatch):
     app = FastAPI()
     import dashboard.plugin_api as api
-
     import hermes_peer.plugin as hpp
 
     monkeypatch.setattr(hpp, "get_manager", lambda: None)
