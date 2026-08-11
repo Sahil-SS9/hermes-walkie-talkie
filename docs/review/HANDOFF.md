@@ -67,6 +67,33 @@ NOT modified by this goal.
   reuse, busy FIFO) + `non_control` command gate
 - `gateway/platforms/base.py` — `MessageEvent.non_control` field
 - `website/docs/user-guide/features/plugins.md` — seam documentation
+
+## Independent reviewer attack checklist (P11.11)
+
+The reviewer must explicitly attack every original V1 blocker plus the
+V1.1 boundaries, against the EXACT final SHAs in the table above
+(read-only; record findings in `docs/review/INDEPENDENT_REVIEW.md`):
+
+1. **V1 blockers**: cross-process discovery; same-UID enforcement;
+   symlink/fence races; control injection; flood/rate limits; storage
+   failure; shutdown/teardown; no cross-machine networking.
+2. **Windows (new)**: named-pipe SDDL/DACL owner-boundary; wrong-user
+   denial; native backend selection; the fail-closed `NotImplementedError`
+   guard; Windows-home wheel install.
+3. **Groups (new)**: ownership fence; unique-name normalisation; caps;
+   optimistic revision; stale membership.
+4. **Broadcasts (new)**: atomic single-writer gate; bounded fan-out;
+   sender self-exclusion; per-recipient child ids; partial-failure
+   semantics; held/queue-only delivery.
+5. **Workflows (new)**: every legal/illegal transition; idempotency-key
+   dedup; deadline/expiry; advisory cancellation; state-event ordering.
+6. **Desktop (new)**: no-auto-install (G6.9); wheel asset integrity;
+   dashboard API auth boundary; WS upgrade gate; content-free metrics;
+   profile scoping.
+7. **Verifier integrity (P11.12)**: the completion verifier must not
+   accept a stale candidate pair, a mismatched SHA, a dirty worktree,
+   or any Markdown/parser placebo verdict; Windows evidence must stay
+   BLOCKED on non-win32.
 - New tests: tests/hermes_cli/test_plugin_message_injection.py,
   tests/test_tui_gateway_inject.py,
   tests/gateway/test_plugin_message_injection.py
