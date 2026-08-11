@@ -87,3 +87,24 @@ disablement.
 - Core worktree has no venv; hermes-agent core is not pip-editable — per phased-plan-execution skill, run core tests with canonical `.venv/bin/python -m pytest` from inside the worktree (CWD-relative imports resolve hermes_cli/gateway), or `uv run` after sync
 - Core desktop runtime-loader contract at `apps/desktop/src/contrib/runtime-loader.ts`; disk plugins live at `<HERMES_HOME>/desktop-plugins/<name>/plugin.js`
 - Dashboard plugin contract: `plugins/<name>/dashboard/manifest.json` + `dashboard/plugin_api.py`, mounted at `/api/plugins/<name>/`, session-token auth via `web_server.auth_middleware`
+## A2A final review remediation (approval: execute all SAFE/CAREFUL/RISKY)
+
+Executed against clean baseline `ffe36877bb318316321587b2f11d10825d392900`.
+All RED→GREEN; full matrix green at `772b6a8` (748 passed / 25 skipped,
+coverage 92.8% PASS, ruff/ty clean, wheel smoke clean, verifier 12/13
+PARTIAL only for policy-blocked native-Windows evidence).
+
+| Finding | Commit |
+|---|---|
+| SAFE-1..3: .hermes/environment.json manifest + tool/events docs | 10c517f |
+| CAREFUL-1: duplicate group add → added:false (store+mgr+tool+API) | 75f48fb |
+| CAREFUL-2: accepted requests expire (transition + query) | 03e8362 |
+| CAREFUL-3: _row_dict caches request column names once | 3d4f4e9 |
+| CAREFUL-4: broadcast ThreadPoolExecutor | dec3521 |
+| RISKY-1: WS auth fails closed (import failure rejects) | fec11f9 |
+| RISKY-2/3: resolve_session seam + public query methods; Dashboard thin adapter (no _peers/_store private access; optional session_id; 400 on ambiguous) | d8c995a |
+| Packaging fix (found by matrix): wheel now ships agent_peer.backends; dashboard extra declares fastapi; verify_wheel_assets enforces 12 paths + --wheel | 772b6a8 |
+
+Not implemented: A2A bridge (future), rejected cleanup proposals, fake
+uvicorn server, frozen-core edits, native Windows claim — all per report
+constraints. Windows evidence remains BLOCKED.
