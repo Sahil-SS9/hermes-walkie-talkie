@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from agent_peer.constants import PROTOCOL_ID, PROTOCOL_ID_V2
 from agent_peer.models import Policy
 
 PLUGIN_ID = "hermes-peer"
@@ -38,6 +39,8 @@ class PeerConfig:
     name: str = ""
     allow_gateway_injection: bool = False
     max_content_bytes: int = 32 * 1024
+    protocols: tuple[str, ...] = (PROTOCOL_ID, PROTOCOL_ID_V2)
+    capabilities: dict = field(default_factory=dict)
     extra: dict = field(default_factory=dict)
 
     @classmethod

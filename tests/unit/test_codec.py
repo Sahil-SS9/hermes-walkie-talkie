@@ -20,9 +20,9 @@ from agent_peer.models import Envelope, Kind, PeerIdentity
 NOW = datetime.now(UTC)
 
 
-def _envelope() -> Envelope:
+def _envelope(protocol: str = "agent-peer/1") -> Envelope:
     return Envelope(
-        protocol="agent-peer/1",
+        protocol=protocol,
         message_id=str(uuid.uuid4()),
         created_at=NOW,
         expires_at=NOW + timedelta(minutes=5),
@@ -126,10 +126,19 @@ class TestEnvelopeCodec:
 
     def test_unknown_major_version_returns_invalid_state(self):
         env = _envelope()
-        raw = encode_envelope(env).replace("agent-peer/1", "agent-peer/2")
+        raw = encode_envelope(env).replace("agent-peer/1", "agent-peer/9")
         decoded, error = decode_envelope_safe(raw.encode("utf-8"))
         assert decoded is None
         assert error == "invalid"
+
+    def test_v2_envelope_decodes(self):
+        """V2 is now supported (ADR-0004): a V2 envelope decodes normally."""
+        env = _envelope(protocol="agent-peer/2")
+        raw = encode_envelope(env)
+        decoded, error = decode_envelope_safe(raw.encode("utf-8"))
+        assert decoded is not None
+        assert error is None
+        assert decoded.protocol == "agent-peer/2"
 
     def test_malformed_returns_invalid_state(self):
         decoded, error = decode_envelope_safe(b"{oops")

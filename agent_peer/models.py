@@ -9,11 +9,11 @@ from __future__ import annotations
 import enum
 import re
 import uuid as uuidlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from .constants import MAX_CONTENT_BYTES, MAX_HOP_COUNT, PROTOCOL_ID
+from .constants import MAX_CONTENT_BYTES, MAX_HOP_COUNT, PROTOCOL_ID, PROTOCOL_ID_V2
 from .errors import ValidationError
 
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -36,7 +36,14 @@ class Kind(str, enum.Enum):
 
 
 class ReceiptState(str, enum.Enum):
-    """Immediate receipt states (ADR-0003)."""
+    """Immediate receipt states (ADR-0003) + V2 result states (ADR-0004).
+
+    ``incompatible``/``ambiguous`` are V2 result states: a peer that cannot
+    perform a group/workflow operation returns ``incompatible`` (never a
+    free-text fallback), and an agent target that resolves to more than one
+    live session returns ``ambiguous`` with no delivery (G2.5, P3.5).
+    V1 state meanings are unchanged.
+    """
 
     QUEUED = "queued"
     HELD = "held"
@@ -46,6 +53,8 @@ class ReceiptState(str, enum.Enum):
     INVALID = "invalid"
     RATE_LIMITED = "rate_limited"
     OVER_CAPACITY = "over_capacity"
+    INCOMPATIBLE = "incompatible"
+    AMBIGUOUS = "ambiguous"
 
 
 class Policy(str, enum.Enum):
@@ -71,6 +80,7 @@ class Surface(str, enum.Enum):
     CLI = "cli"
     TUI = "tui"
     GATEWAY = "gateway"
+    DESKTOP = "desktop"
 
 
 def _require_uuid(name: str, value: Any) -> str:
@@ -118,6 +128,9 @@ class PeerRecord:
     session_id: str = ""
     name: str = ""
     profile: str = ""
+    agent_id: str = ""            # long-lived adapter/profile identity (V2)
+    protocols: tuple[str, ...] = field(default_factory=tuple)  # advertised supported protocol IDs
+    capabilities: dict = field(default_factory=dict)  # advertised V2 capability flags
     surface: str = "cli"
     host_target: str = ""          # opaque Hermes-owned routing token
     pid: int = 0
@@ -135,9 +148,20 @@ class PeerRecord:
     def __post_init__(self) -> None:
         object.__setattr__(self, "peer_id", _require_uuid("peer_id", self.peer_id))
         object.__setattr__(self, "instance_id", _require_uuid("instance_id", self.instance_id))
+        if self.agent_id:
+            object.__setattr__(self, "agent_id", _require_uuid("agent_id", self.agent_id))
+        if not isinstance(self.protocols, tuple | list):
+            raise ValidationError("protocols must be a tuple of protocol IDs")
+        protocols = tuple(self.protocols) or (PROTOCOL_ID,)
+        known = {PROTOCOL_ID, PROTOCOL_ID_V2}
+        if not all(isinstance(p, str) and p in known for p in protocols):
+            raise ValidationError(f"invalid protocol advertisement {self.protocols!r}")
+        object.__setattr__(self, "protocols", protocols)
+        if not isinstance(self.capabilities, dict):
+            raise ValidationError("capabilities must be a dict")
         if self.status not in {p.value for p in Presence}:
             raise ValidationError(f"invalid presence status {self.status!r}")
-        if self.protocol != PROTOCOL_ID:
+        if self.protocol != PROTOCOL_ID and self.protocol != PROTOCOL_ID_V2:
             raise ValidationError(f"unsupported protocol {self.protocol!r}")
 
 
@@ -158,8 +182,10 @@ class Envelope:
     hop_count: int = 0
 
     def __post_init__(self) -> None:
-        if self.protocol != PROTOCOL_ID:
-            raise ValidationError(f"unsupported protocol {self.protocol!r}; expected {PROTOCOL_ID}")
+        if self.protocol not in (PROTOCOL_ID, PROTOCOL_ID_V2):
+            raise ValidationError(
+                f"unsupported protocol {self.protocol!r}; expected {PROTOCOL_ID} or {PROTOCOL_ID_V2}"
+            )
         object.__setattr__(self, "message_id", _require_uuid("message_id", self.message_id))
         created = _require_utc_datetime("created_at", self.created_at)
         expires = _require_utc_datetime("expires_at", self.expires_at)

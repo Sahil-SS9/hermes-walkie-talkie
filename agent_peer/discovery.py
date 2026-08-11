@@ -191,6 +191,12 @@ def _probe_once(record: PeerRecord, backend=None) -> dict | None:
         return None
     if identity.get("session_id") != record.session_id:
         return None
+    # V2 fields: when the record advertises them, the ALIVE reply must match
+    # exactly; absent fields (V1 peers) are tolerated on both sides.
+    if identity.get("agent_id") != record.agent_id:
+        return None
+    if tuple(identity.get("protocols") or ()) != record.protocols:
+        return None
     if identity.get("protocol") != record.protocol:
         return None
     if identity.get("status") != record.status:
@@ -324,6 +330,65 @@ class DiscoveryService:
 
     def _probe(self, record: PeerRecord) -> bool:
         return _probe_once(record, backend=self._backend) is not None
+
+    # -- deterministic agent -> peer resolution (P3.7, G2.5) ----------------
+
+    def resolve_agent(
+        self,
+        agent_id: str,
+        *,
+        pinned_peer_id: str | None = None,
+        requesting_peer_id: str | None = None,
+    ) -> PeerRecord:
+        """Resolve an agent target to exactly one live session (G2.5).
+
+        Order:
+        1. pinned live ``peer_id`` -> that session;
+        2. exactly one explicitly primary session -> that session;
+        3. exactly one live session -> that session;
+        4. else -> raise :class:`AmbiguousPeer` (never broadcast to all).
+
+        A record with an empty ``agent_id`` is V1-only and never resolvable by
+        agent. Raises ``DiscoveryError`` subclasses; never picks the first
+        match on ambiguity (G2.6).
+        """
+        if not agent_id:
+            raise DiscoveryError("empty agent_id")
+        excluded = set()
+        if requesting_peer_id:
+            excluded.add(requesting_peer_id)
+        candidates = [
+            r
+            for r in self._registry.list_peers()
+            if r.agent_id == agent_id and r.peer_id not in excluded
+        ]
+        live = [r for r in candidates if self._probe(r)]
+        if not live:
+            raise DiscoveryError(f"no live session for agent {agent_id!r}")
+
+        # 1. Pinned live peer_id wins when it is one of the live sessions.
+        if pinned_peer_id:
+            pinned = [r for r in live if r.peer_id == pinned_peer_id]
+            if len(pinned) == 1:
+                return pinned[0]
+            raise AmbiguousPeer(
+                f"pinned peer {pinned_peer_id!r} is not a live session of agent {agent_id!r}"
+            )
+
+        # 2. Exactly one explicitly primary session wins.
+        primaries = [r for r in live if r.capabilities.get("primary") is True]
+        if len(primaries) == 1:
+            return primaries[0]
+
+        # 3. Exactly one live session wins.
+        if len(live) == 1:
+            return live[0]
+
+        # 4. Ambiguous: fail closed, no delivery.
+        raise AmbiguousPeer(
+            f"agent {agent_id!r} has {len(live)} live sessions; "
+            "pin a peer_id or mark one session primary"
+        )
 
     # -- separate race-safe stale repair (REM-111) ------------------------
 

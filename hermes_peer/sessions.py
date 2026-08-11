@@ -50,6 +50,22 @@ def _surface_of(platform: str | None) -> str:
     return "gateway"
 
 
+def _hermes_home(ctx) -> Path | None:
+    """Resolve the live profile's HERMES_HOME (G2.3).
+
+    Preference: the plugin context's ``hermes_home`` when present, then the
+    ``HERMES_HOME`` env var. Returns ``None`` when neither is known — the
+    caller must NOT guess ``~/.hermes`` (tests would mutate the real profile).
+    """
+    for candidate in (
+        getattr(ctx, "hermes_home", None),
+        os.environ.get("HERMES_HOME"),
+    ):
+        if candidate:
+            return Path(candidate)
+    return None
+
+
 def host_target_for(surface: str, session_id: str) -> str:
     """Opaque Hermes-owned routing token (ADR-0002)."""
     return f"{surface}:{session_id}"
@@ -73,6 +89,31 @@ class PeerSessionManager:
         self._peer_handles: dict[str, PeerHandle] = {}
         self._policy = PolicyEngine(policy=self._config.inbound)
         self._session_policies: dict[str, Policy] = {}  # peer_id -> session-scoped policy
+        self._agent_id_cache: str | None = None
+
+    # ------------------------------------------------------------------
+    # V2 stable identity (G2.3, P3.2)
+    # ------------------------------------------------------------------
+
+    def _agent_id(self) -> str:
+        """The profile's long-lived agent identity (G2.3).
+
+        Persisted owner-only inside the REAL HERMES_HOME when one is known
+        (plugin context or ``HERMES_HOME`` env). When no home is resolvable
+        (bare test contexts), an ephemeral UUID is used and NEVER written to
+        the user's home directory — tests must not mutate the real profile.
+        """
+        if self._agent_id_cache is None:
+            home = _hermes_home(self._ctx)
+            if home is None:
+                import uuid as _uuid
+
+                self._agent_id_cache = str(_uuid.uuid4())
+            else:
+                from agent_peer.agent_identity import load_or_create_agent_id
+
+                self._agent_id_cache = load_or_create_agent_id(home)
+        return self._agent_id_cache
 
     # ------------------------------------------------------------------
     # Lifecycle hooks (fired by Hermes with explicit kwargs — never
@@ -102,6 +143,9 @@ class PeerSessionManager:
             session_id=session_id,
             name=alias,
             profile=kwargs.get("profile", ""),
+            agent_id=self._agent_id(),
+            protocols=self._config.protocols,
+            capabilities=self._config.capabilities,
             surface=surface,
             host_target=host_target_for(surface, session_id),
             pid=meta["pid"],

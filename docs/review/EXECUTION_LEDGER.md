@@ -39,7 +39,8 @@ No native Windows execution path exists on this rig (checked: wine, /mnt/c, VM �
 |-------|--------|--------|
 | P0 | `fa470e8` (docs, no code) | PUB verified; baseline archived; ADRs + spike reports written |
 | P1 | `9f12f72` | Backend-neutral extraction: 10 conformance + 17 backend/path tests new; full suite 430 passed/4 skipped (baseline 403); ruff clean; ty clean; coverage gate PASS 91.6% |
-| P2 | (pending commit) | Native Windows backend: SID/DACL named pipes via pywin32 (optional extra); WindowsPathBackend under %LOCALAPPDATA%; 18 native-gated tests written (skip on Linux with explicit reason — never green evidence); fail-closed platform checks on Linux; ruff/ty clean; coverage gate PASS 91.6%; native gate BLOCKED on this rig |
+| P2 | `001bf49` | Native Windows backend: SID/DACL named pipes via pywin32 (optional extra); WindowsPathBackend under %LOCALAPPDATA%; 18 native-gated tests written (skip on Linux with explicit reason — never green evidence); fail-closed platform checks on Linux; ruff/ty clean; coverage gate PASS 91.6%; native gate BLOCKED on this rig |
+| P3 | (pending commit) | Stable agent identity + V2 protocol: PeerRecord agent_id/protocols/capabilities; ReceiptState incompatible/ambiguous; Surface.DESKTOP; capabilities.py negotiation (highest-mutual, fail-closed); protocol_v2.py strict typed payloads; resolve_agent deterministic routing (pinned→primary→single→ambiguous); agent_identity.py owner-only persistence in HERMES_HOME (ephemeral when no real home — tests never mutate ~/.hermes); sessions.py V2 advertisement; store v2 migration (idempotent, old rows readable as V1, readonly-safe). 49 new tests; full suite 487 passed/4+18 skipped; ruff/ty clean; coverage gate PASS 91.3% |
 
 ## Environment facts
 

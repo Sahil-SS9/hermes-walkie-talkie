@@ -22,7 +22,7 @@ from .models import Receipt, ReceiptState
 
 logger = logging.getLogger("agent_peer.store")
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -37,13 +37,22 @@ CREATE TABLE IF NOT EXISTS messages (
     reply_to TEXT,
     conversation_id TEXT,
     delivered_at TEXT,
-    hop_count INTEGER NOT NULL DEFAULT 0
+    hop_count INTEGER NOT NULL DEFAULT 0,
+    protocol TEXT NOT NULL DEFAULT 'agent-peer/1'
 );
 CREATE INDEX IF NOT EXISTS idx_messages_recipient_state
     ON messages(recipient_peer_id, state);
 CREATE INDEX IF NOT EXISTS idx_messages_created
     ON messages(created_at);
 """
+
+_MIGRATIONS: dict[int, list[str]] = {
+    # v1 -> v2: add protocol column; existing rows default to agent-peer/1
+    # (old records remain readable as V1, P3.6).
+    2: [
+        "ALTER TABLE messages ADD COLUMN protocol TEXT NOT NULL DEFAULT 'agent-peer/1'",
+    ],
+}
 
 
 class MessageStore:
@@ -82,10 +91,26 @@ class MessageStore:
                 "SELECT version FROM schema_version ORDER BY rowid LIMIT 1"
             ).fetchone()
             current = row[0] if row else 0
+            migrated = False
             if current < 1:
+                # Fresh install: the full schema IS the latest version.
                 self._conn.executescript(_SCHEMA)
+                current = _SCHEMA_VERSION
+                migrated = True
+            # Apply incremental migrations idempotently (P3.6). Each step is
+            # its own statement list keyed by target version; re-running is
+            # safe because ALTER ... ADD COLUMN only runs when the recorded
+            # version is below the target.
+            for target in sorted(k for k in _MIGRATIONS if k > current):
+                for statement in _MIGRATIONS[target]:
+                    self._conn.execute(statement)
+                current = target
+                migrated = True
+            if migrated:
+                # Only a writer that changed the schema touches the version
+                # row; a read-only DB that is already current must open clean.
                 self._conn.execute("DELETE FROM schema_version")
-                self._conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+                self._conn.execute("INSERT INTO schema_version (version) VALUES (?)", (current,))
             self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -106,8 +131,8 @@ class MessageStore:
                 """INSERT INTO messages (
                     message_id, recipient_peer_id, sender_peer_id, kind,
                     content, state, created_at, expires_at, reply_to,
-                    conversation_id, delivered_at, hop_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    conversation_id, delivered_at, hop_count, protocol
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO NOTHING""",
                 (
                     row["message_id"],
@@ -122,6 +147,7 @@ class MessageStore:
                     row.get("conversation_id"),
                     row.get("delivered_at"),
                     row.get("hop_count", 0),
+                    row.get("protocol", "agent-peer/1"),
                 ),
             )
             self._conn.commit()
@@ -155,8 +181,8 @@ class MessageStore:
                 """INSERT INTO messages (
                     message_id, recipient_peer_id, sender_peer_id, kind,
                     content, state, created_at, expires_at, reply_to,
-                    conversation_id, delivered_at, hop_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    conversation_id, delivered_at, hop_count, protocol
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     row["message_id"],
                     row["recipient_peer_id"],
@@ -170,6 +196,7 @@ class MessageStore:
                     row.get("conversation_id"),
                     row.get("delivered_at"),
                     row.get("hop_count", 0),
+                    row.get("protocol", "agent-peer/1"),
                 ),
             )
             self._conn.commit()

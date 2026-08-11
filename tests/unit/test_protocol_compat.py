@@ -36,7 +36,7 @@ class TestCompatibility:
         assert error is None
         assert decoded.protocol == "agent-peer/1"
 
-    @pytest.mark.parametrize("bad_protocol", ["agent-peer/2", "agent-peer/9", "other/1", "agent-peer", ""])
+    @pytest.mark.parametrize("bad_protocol", ["agent-peer/3", "agent-peer/9", "other/1", "agent-peer", ""])
     def test_unknown_versions_return_invalid_without_crashing(self, bad_protocol):
         raw = encode_envelope(_envelope()).replace("agent-peer/1", bad_protocol)
         decoded, error = decode_envelope_safe(raw.encode("utf-8"))
