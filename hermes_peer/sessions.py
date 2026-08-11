@@ -46,7 +46,9 @@ logger = logging.getLogger("hermes_peer.sessions")
 def _surface_of(platform: str | None) -> str:
     if not platform or platform in ("", "cli"):
         return "cli"
-    if platform in ("tui", "webui", "desktop", "dashboard"):
+    if platform in ("desktop",):
+        return "desktop"
+    if platform in ("tui", "webui", "dashboard"):
         return "tui"
     return "gateway"
 

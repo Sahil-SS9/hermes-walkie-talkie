@@ -30,8 +30,9 @@ class FakeModelHandler(BaseHTTPRequestHandler):
     for other tool flows (e.g. structured requests).
     """
 
-    def __init__(self, *args: Any, script: list | None = None, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, script: list | None = None, script_fn: Any = None, **kwargs: Any) -> None:
         self._script = script
+        self._script_fn = script_fn
         super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - BaseHTTPRequestHandler signature
@@ -51,6 +52,35 @@ class FakeModelHandler(BaseHTTPRequestHandler):
         # Script the exact search -> describe -> call sequence, then echo the
         # plugin result into the final response.
         tool_messages = [message for message in messages if message.get("role") == "tool"]
+        if self._script_fn is not None:
+            # A callable script receives the accumulated tool results and
+            # returns the next (tool_name, arguments) tuple, or None to
+            # finish. This lets an E2E thread a runtime-discovered value
+            # (e.g. a group_id created by an earlier tool call) through the
+            # same deferred dispatch path.
+            next_step = self._script_fn(tool_messages)
+            if next_step is None:
+                tool_result = str(tool_messages[-1].get("content") or "") if tool_messages else ""
+                response = {
+                    "id": "chatcmpl-fake",
+                    "object": "chat.completion",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": f"Discovery complete. Tool result: {tool_result}",
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                }
+            else:
+                tool_name, arguments = next_step
+                response = self._tool_call_response(tool_name, arguments, len(tool_messages))
+            self._respond(payload, stream, response)
+            return
         script = self._script or [
             ("tool_search", {"query": "peer_list_agents", "limit": 5}),
             ("tool_describe", {"name": "peer_list_agents"}),
@@ -75,32 +105,37 @@ class FakeModelHandler(BaseHTTPRequestHandler):
             }
         else:
             tool_name, arguments = script[len(tool_messages)]
-            response = {
-                "id": "chatcmpl-fake-tool",
-                "object": "chat.completion",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                {
-                                    "id": f"call_fake_{len(tool_messages) + 1}",
-                                    "type": "function",
-                                    "function": {
-                                        "name": tool_name,
-                                        "arguments": json.dumps(arguments),
-                                    },
-                                }
-                            ],
-                        },
-                        "finish_reason": "tool_calls",
-                    }
-                ],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-            }
+            response = self._tool_call_response(tool_name, arguments, len(tool_messages))
+        self._respond(payload, stream, response)
 
+    def _tool_call_response(self, tool_name: str, arguments: dict, index: int) -> dict:
+        return {
+            "id": "chatcmpl-fake-tool",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": f"call_fake_{index + 1}",
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": json.dumps(arguments),
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+
+    def _respond(self, payload: dict, stream: bool, response: dict) -> None:
         if stream:
             self._sse_stream(response)
         else:
@@ -142,13 +177,14 @@ class FakeModelHandler(BaseHTTPRequestHandler):
 class FakeModelServer:
     """Bounded loopback fake model server (test-only, no credentials)."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 0, script: list | None = None) -> None:
+    def __init__(self, host: str = "127.0.0.1", port: int = 0, script: list | None = None, script_fn: Any = None) -> None:
         self._script = script
+        self._script_fn = script_fn
         self._httpd = ThreadingHTTPServer((host, port), self._handler_factory)
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
 
     def _handler_factory(self, *args: Any, **kwargs: Any):
-        return FakeModelHandler(*args, script=self._script, **kwargs)
+        return FakeModelHandler(*args, script=self._script, script_fn=self._script_fn, **kwargs)
 
     @property
     def base_url(self) -> str:
