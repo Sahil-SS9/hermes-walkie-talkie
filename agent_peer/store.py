@@ -22,7 +22,7 @@ from .models import Receipt, ReceiptState
 
 logger = logging.getLogger("agent_peer.store")
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -81,6 +81,33 @@ CREATE INDEX IF NOT EXISTS idx_group_members_agent
     ON group_members(agent_id);
 CREATE INDEX IF NOT EXISTS idx_broadcasts_group
     ON broadcasts(group_id);
+CREATE TABLE IF NOT EXISTS requests (
+    request_id TEXT PRIMARY KEY,
+    sender_agent_id TEXT NOT NULL,
+    recipient_agent_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    deadline TEXT NOT NULL,
+    idempotency_key TEXT DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
+    parent_request_id TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (sender_agent_id, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS request_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_requests_recipient_state
+    ON requests(recipient_agent_id, state);
+CREATE INDEX IF NOT EXISTS idx_requests_deadline
+    ON requests(deadline);
+CREATE INDEX IF NOT EXISTS idx_request_events_request
+    ON request_events(request_id);
 """
 
 _MIGRATIONS: dict[int, list[str]] = {
@@ -124,6 +151,33 @@ _MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_group_members_agent ON group_members(agent_id)",
         "CREATE INDEX IF NOT EXISTS idx_broadcasts_group ON broadcasts(group_id)",
+    ],
+    # v3 -> v4: requests + ordered request_events (P5).
+    4: [
+        """CREATE TABLE IF NOT EXISTS requests (
+            request_id TEXT PRIMARY KEY,
+            sender_agent_id TEXT NOT NULL,
+            recipient_agent_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            deadline TEXT NOT NULL,
+            idempotency_key TEXT DEFAULT '',
+            correlation_id TEXT NOT NULL DEFAULT '',
+            parent_request_id TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL DEFAULT '{}',
+            UNIQUE (sender_agent_id, idempotency_key)
+        )""",
+        """CREATE TABLE IF NOT EXISTS request_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            occurred_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_requests_recipient_state ON requests(recipient_agent_id, state)",
+        "CREATE INDEX IF NOT EXISTS idx_requests_deadline ON requests(deadline)",
+        "CREATE INDEX IF NOT EXISTS idx_request_events_request ON request_events(request_id)",
     ],
 }
 

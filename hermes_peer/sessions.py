@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC
 from pathlib import Path
 
 from agent_peer.discovery import DiscoveryService
@@ -523,6 +524,150 @@ class PeerSessionManager:
             for session_id, rec in self._peers.items():
                 if rec.peer_id == peer_id:
                     self._peers[session_id] = renamed
+
+    # ------------------------------------------------------------------
+    # Structured request/reply workflows (P5, G4)
+    # ------------------------------------------------------------------
+
+    def _request_store(self):
+        from agent_peer.requests import RequestStore
+
+        if getattr(self, "_requests", None) is None:
+            self._requests = RequestStore(self._store)
+        return self._requests
+
+    def create_request(
+        self,
+        recipient_agent_id: str,
+        summary: str,
+        *,
+        payload: dict | None = None,
+        deadline: str | None = None,
+        idempotency_key: str = "",
+        session_id: str | None = None,
+    ) -> dict:
+        """Create + enqueue a structured request to one agent (G4).
+
+        The request is persisted, transitioned to queued, and delivered to
+        the recipient as inert conversational input (``<peer_request>``).
+        The immediate transport result is separate from workflow state (G4.4).
+        """
+        from datetime import datetime, timedelta
+
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        sender_rec = self._require_session(session_id)
+        sender_agent = sender_rec.agent_id or sender_rec.peer_id
+        if not deadline:
+            deadline = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
+        store = self._request_store()
+        request = store.create(
+            sender_agent_id=sender_agent,
+            recipient_agent_id=recipient_agent_id,
+            summary=summary,
+            deadline=deadline,
+            idempotency_key=idempotency_key,
+            payload=payload,
+        )
+        # Enqueue (created -> queued).
+        store.transition(request.request_id, "queued")
+        # Deliver as inert conversational input to the recipient agent's
+        # primary live session. Failure to deliver does NOT roll back the
+        # workflow state — the request stays queued for bounded polling.
+        from .delivery import peer_request_marker
+
+        recipient = self._discovery.resolve_agent(recipient_agent_id)
+        delivered = False
+        if recipient is not None:
+            wrapped = peer_request_marker(
+                request.summary,
+                sender_name=sender_rec.name or "peer",
+                sender_agent_id=sender_agent,
+                request_id=request.request_id,
+                summary=request.summary,
+            )
+            env = self._make_envelope(
+                recipient=recipient.peer_id,
+                content=wrapped,
+                session_id=session_id,
+            )
+            receipt = self._runtime.send(env)
+            delivered = receipt.state in (ReceiptState.QUEUED, ReceiptState.HELD)
+        return {
+            "request_id": request.request_id,
+            "state": request.state,
+            "delivered": delivered,
+            "recipient_agent_id": recipient_agent_id,
+        }
+
+    def request_status(self, request_id: str, *, session_id: str | None = None) -> dict:
+        store = self._request_store()
+        request = store.get(request_id)
+        if request is None:
+            raise ValueError(f"unknown request {request_id}")
+        events = [
+            {"state": e.state, "detail": e.detail, "occurred_at": e.occurred_at}
+            for e in store.events(request_id)
+        ]
+        return {
+            "request_id": request.request_id,
+            "state": request.state,
+            "summary": request.summary,
+            "sender_agent_id": request.sender_agent_id,
+            "recipient_agent_id": request.recipient_agent_id,
+            "created_at": request.created_at,
+            "deadline": request.deadline,
+            "events": events,
+        }
+
+    def request_respond(
+        self,
+        request_id: str,
+        action: str,
+        *,
+        detail: str = "",
+        session_id: str | None = None,
+    ) -> dict:
+        """Recipient action: accept|progress|complete|fail|refuse (G4.5)."""
+        store = self._request_store()
+        request = store.get(request_id)
+        if request is None:
+            raise ValueError(f"unknown request {request_id}")
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
+        if rec.agent_id != request.recipient_agent_id and rec.peer_id != request.recipient_agent_id:
+            raise ValueError("only the recipient may respond to this request")
+        target = {
+            "accept": "accepted",
+            "progress": "in_progress",
+            "complete": "completed",
+            "fail": "failed",
+            "refuse": "refused",
+        }.get(action)
+        if target is None:
+            raise ValueError(f"unknown request action {action!r}")
+        updated = store.transition(request.request_id, target, detail=detail)
+        return {"request_id": request.request_id, "state": updated.state if updated else request.state}
+
+    def request_cancel(self, request_id: str, *, session_id: str | None = None) -> dict:
+        """Advisory cancellation: never interrupts an active tool (G4.6)."""
+        store = self._request_store()
+        request = store.get(request_id)
+        if request is None:
+            raise ValueError(f"unknown request {request_id}")
+        updated = store.transition(request.request_id, "cancelled", detail="cancelled by sender")
+        return {"request_id": request.request_id, "state": updated.state if updated else request.state}
+
+    def request_expire_overdue(self) -> int:
+        """Bounded expiry cleanup (P5.8)."""
+        return self._request_store().expire_overdue()
 
     def doctor(self) -> dict:
         """Diagnostics for `hermes peer doctor` (REL-1104)."""

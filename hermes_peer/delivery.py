@@ -27,6 +27,8 @@ logger = logging.getLogger("hermes_peer.delivery")
 
 PEER_BOUNDARY_OPEN = "<peer_message>"
 PEER_BOUNDARY_CLOSE = "</peer_message>"
+REQUEST_BOUNDARY_OPEN = "<peer_request>"
+REQUEST_BOUNDARY_CLOSE = "</peer_request>"
 
 
 def peer_message_marker(content: str, *, sender_name: str, sender_peer_id: str, message_id: str) -> str:
@@ -38,6 +40,32 @@ def peer_message_marker(content: str, *, sender_name: str, sender_peer_id: str, 
         f"Message ID: {message_id}\n\n"
         f"{content}\n"
         f"{PEER_BOUNDARY_CLOSE}"
+    )
+
+
+def peer_request_marker(
+    content: str,
+    *,
+    sender_name: str,
+    sender_agent_id: str,
+    request_id: str,
+    summary: str,
+) -> str:
+    """Wrap a structured request in the inert conversational boundary (P5.6).
+
+    The recipient sees the request as untrusted peer input — it cannot
+    invoke slash commands, approve tools, answer confirmation prompts or
+    bypass policy (G4.9). The request_id and state are explicit so the
+    recipient can act through tools/commands.
+    """
+    return (
+        f"{REQUEST_BOUNDARY_OPEN}\n"
+        f"From: {sender_name}\n"
+        f"Sender Agent ID: {sender_agent_id}\n"
+        f"Request ID: {request_id}\n"
+        f"Summary: {summary}\n\n"
+        f"{content}\n"
+        f"{REQUEST_BOUNDARY_CLOSE}"
     )
 
 

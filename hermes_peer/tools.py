@@ -78,6 +78,81 @@ def register_tools(ctx) -> None:
         description="List held/queued peer messages, or release/refuse a held message.",
         emoji="📥",
     )
+    ctx.register_tool(
+        "peer_request_create",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "target_agent_id": {
+                    "type": "string",
+                    "description": "Stable agent_id of the recipient agent.",
+                },
+                "summary": {"type": "string", "description": "Short request summary."},
+                "detail": {"type": "string", "description": "Optional longer detail."},
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "Optional; repeated key returns the original request.",
+                },
+            },
+            "required": ["target_agent_id", "summary"],
+            "additionalProperties": False,
+        },
+        handler=peer_request_create,
+        description="Create and enqueue a structured request to one agent (conversational input only).",
+        emoji="📋",
+    )
+    ctx.register_tool(
+        "peer_request_status",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "Request id to query."},
+            },
+            "required": ["request_id"],
+            "additionalProperties": False,
+        },
+        handler=peer_request_status,
+        description="Poll the state timeline of a structured request.",
+        emoji="🔎",
+    )
+    ctx.register_tool(
+        "peer_request_respond",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "Request id."},
+                "action": {
+                    "type": "string",
+                    "enum": ["accept", "progress", "complete", "fail", "refuse"],
+                    "description": "Recipient action on the request.",
+                },
+                "detail": {"type": "string", "description": "Optional progress note."},
+            },
+            "required": ["request_id", "action"],
+            "additionalProperties": False,
+        },
+        handler=peer_request_respond,
+        description="Recipient: accept/progress/complete/fail/refuse a structured request.",
+        emoji="✅",
+    )
+    ctx.register_tool(
+        "peer_request_cancel",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "Request id."},
+            },
+            "required": ["request_id"],
+            "additionalProperties": False,
+        },
+        handler=peer_request_cancel,
+        description="Advisory cancellation of a structured request (never interrupts tools).",
+        emoji="⏹️",
+    )
 
 
 def peer_list_agents(args: dict, **kwargs) -> str:
@@ -94,6 +169,7 @@ def peer_list_agents(args: dict, **kwargs) -> str:
         peers.append(
             {
                 "peer_id": record.peer_id,
+                "agent_id": record.agent_id,
                 "name": record.name,
                 "profile": record.profile,
                 "surface": record.surface,
@@ -165,3 +241,79 @@ def peer_read_inbox(args: dict, **kwargs) -> str:
         return json.dumps({"released": ok, "message_id": message_id} if ok else {"error": f"no held message {message_id}"})
     ok = mgr.refuse_message(message_id, session_id=session_id)
     return json.dumps({"refused": ok, "message_id": message_id} if ok else {"error": f"no held message {message_id}"})
+
+
+def peer_request_create(args: dict, **kwargs) -> str:
+    """Create + enqueue a structured request to one agent (P5, G4).
+
+    The request is conversational input only — it cannot approve tools,
+    invoke slash commands or bypass policy (G4.9).
+    """
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    target_agent_id = (args.get("target_agent_id") or "").strip()
+    summary = (args.get("summary") or "").strip()
+    if not target_agent_id or not summary:
+        return json.dumps({"error": "target_agent_id and summary are required"})
+    session_id = kwargs.get("session_id")
+    try:
+        result = mgr.create_request(
+            target_agent_id,
+            summary,
+            payload={"detail": args.get("detail")} if args.get("detail") else None,
+            idempotency_key=args.get("idempotency_key") or "",
+            session_id=session_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("peer_request_create failed: %s", exc)
+        return json.dumps({"error": f"request failed: {exc}"})
+    return json.dumps(result)
+
+
+def peer_request_status(args: dict, **kwargs) -> str:
+    """Poll the state timeline of a structured request (G4.10)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    request_id = (args.get("request_id") or "").strip()
+    if not request_id:
+        return json.dumps({"error": "request_id is required"})
+    session_id = kwargs.get("session_id")
+    try:
+        return json.dumps(mgr.request_status(request_id, session_id=session_id))
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def peer_request_respond(args: dict, **kwargs) -> str:
+    """Recipient action on a structured request (G4.5)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    request_id = (args.get("request_id") or "").strip()
+    action = (args.get("action") or "").strip().lower()
+    if not request_id or action not in ("accept", "progress", "complete", "fail", "refuse"):
+        return json.dumps({"error": "request_id and action (accept|progress|complete|fail|refuse) are required"})
+    session_id = kwargs.get("session_id")
+    try:
+        return json.dumps(
+            mgr.request_respond(request_id, action, detail=args.get("detail") or "", session_id=session_id)
+        )
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def peer_request_cancel(args: dict, **kwargs) -> str:
+    """Advisory cancellation of a structured request (G4.6)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    request_id = (args.get("request_id") or "").strip()
+    if not request_id:
+        return json.dumps({"error": "request_id is required"})
+    session_id = kwargs.get("session_id")
+    try:
+        return json.dumps(mgr.request_cancel(request_id, session_id=session_id))
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})

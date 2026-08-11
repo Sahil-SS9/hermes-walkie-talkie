@@ -22,7 +22,17 @@ from typing import Any
 
 
 class FakeModelHandler(BaseHTTPRequestHandler):
-    """Serves /v1/chat/completions with a scripted tool-call sequence."""
+    """Serves /v1/chat/completions with a scripted tool-call sequence.
+
+    The default script exercises the deferred-tool protocol for
+    ``peer_list_agents`` (search -> describe -> call). A custom ``script``
+    (list of ``(tool_name, arguments)`` tuples) can be supplied per-server
+    for other tool flows (e.g. structured requests).
+    """
+
+    def __init__(self, *args: Any, script: list | None = None, **kwargs: Any) -> None:
+        self._script = script
+        super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - BaseHTTPRequestHandler signature
         return  # silence
@@ -41,7 +51,12 @@ class FakeModelHandler(BaseHTTPRequestHandler):
         # Script the exact search -> describe -> call sequence, then echo the
         # plugin result into the final response.
         tool_messages = [message for message in messages if message.get("role") == "tool"]
-        if len(tool_messages) >= 3:
+        script = self._script or [
+            ("tool_search", {"query": "peer_list_agents", "limit": 5}),
+            ("tool_describe", {"name": "peer_list_agents"}),
+            ("tool_call", {"name": "peer_list_agents", "arguments": {}}),
+        ]
+        if len(tool_messages) >= len(script):
             tool_result = str(tool_messages[-1].get("content") or "")
             response = {
                 "id": "chatcmpl-fake",
@@ -59,12 +74,7 @@ class FakeModelHandler(BaseHTTPRequestHandler):
                 "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
             }
         else:
-            deferred_steps = (
-                ("tool_search", {"query": "peer_list_agents", "limit": 5}),
-                ("tool_describe", {"name": "peer_list_agents"}),
-                ("tool_call", {"name": "peer_list_agents", "arguments": {}}),
-            )
-            tool_name, arguments = deferred_steps[len(tool_messages)]
+            tool_name, arguments = script[len(tool_messages)]
             response = {
                 "id": "chatcmpl-fake-tool",
                 "object": "chat.completion",
@@ -132,9 +142,13 @@ class FakeModelHandler(BaseHTTPRequestHandler):
 class FakeModelServer:
     """Bounded loopback fake model server (test-only, no credentials)."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 0) -> None:
-        self._httpd = ThreadingHTTPServer((host, port), FakeModelHandler)
+    def __init__(self, host: str = "127.0.0.1", port: int = 0, script: list | None = None) -> None:
+        self._script = script
+        self._httpd = ThreadingHTTPServer((host, port), self._handler_factory)
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+
+    def _handler_factory(self, *args: Any, **kwargs: Any):
+        return FakeModelHandler(*args, script=self._script, **kwargs)
 
     @property
     def base_url(self) -> str:
