@@ -73,7 +73,12 @@ class PeerClient:
             # (same framing in both directions — see codec.encode_frame).
             from .codec import encode_frame
 
-            sock.sendall(encode_frame(encode_envelope(envelope)))
+            try:
+                sock.sendall(encode_frame(encode_envelope(envelope)))
+            except OSError as exc:
+                raise UnreachableError(
+                    f"cannot send to {self._socket_path}: {exc}"
+                ) from exc
             decoder = FrameDecoder()
             while True:
                 try:
@@ -81,6 +86,10 @@ class PeerClient:
                 except TimeoutError as exc:
                     raise TimeoutError_(
                         f"no receipt from {self._socket_path} within {self._receipt_timeout}s"
+                    ) from exc
+                except OSError as exc:
+                    raise UnreachableError(
+                        f"receive failed at {self._socket_path}: {exc}"
                     ) from exc
                 if not chunk:
                     raise UnreachableError(f"peer closed connection at {self._socket_path}")

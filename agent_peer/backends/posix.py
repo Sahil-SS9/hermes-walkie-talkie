@@ -171,7 +171,12 @@ class PosixTransportBackend:
             if not verify_peer_credentials(peer_credentials(sock)):
                 raise UnreachableError("peer credential check failed (different UID)")
             sock.settimeout(timeout)
-            sock.sendall(_frame(frame))
+            try:
+                sock.sendall(_frame(frame))
+            except OSError as exc:
+                raise UnreachableError(
+                    f"cannot send to {endpoint.address}: {exc}"
+                ) from exc
             decoder = _RawFrameDecoder()
             while True:
                 try:
@@ -179,6 +184,10 @@ class PosixTransportBackend:
                 except TimeoutError as exc:
                     raise TimeoutError_(
                         f"no reply from {endpoint.address} within {timeout}s"
+                    ) from exc
+                except OSError as exc:
+                    raise UnreachableError(
+                        f"receive failed at {endpoint.address}: {exc}"
                     ) from exc
                 if not chunk:
                     raise UnreachableError(
