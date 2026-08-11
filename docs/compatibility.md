@@ -51,13 +51,17 @@ for the exact commit) or any later commit with the same signatures.
   entry points documented in ADR-0002.
 - If the host API is unavailable, fail clearly. Never silently degrade.
 
-## Tested matrix (v1 release candidate)
+## Tested matrix (V1.1 release candidate)
 
 | OS | Python | Status |
 |---|---|---|
 | Linux | 3.11, 3.12, 3.13 | Verified locally (release-blocking) |
 | macOS | 3.11–3.13 | CI configured; execution deferred to post-goal remote CI |
-| Windows | — | Explicitly out of scope for v1 |
+| Windows | 3.12 | Backend implemented; native release evidence BLOCKED (no approved native runner). Final status `IMPLEMENTED — WINDOWS RELEASE EVIDENCE BLOCKED` |
+
+Windows V1.1 support is NOT a v1.1 blocker claim: the named-pipe/DACL
+transport is implemented and native-gated, but the gated tests only become
+green evidence on a real Windows runner (CI job `native-windows`).
 
 The minimum Hermes commit is recorded in `docs/review/VERIFICATION.md` and
 `docs/review/HANDOFF.md` after the candidate freeze.

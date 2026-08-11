@@ -21,12 +21,17 @@ Terminal / Process A                     Terminal / Process B
 ## What it is
 
 - **Agent Peer** (`agent_peer`): a harness-neutral Python core — discovery,
-  addressing, protocol, transport, inbox, receipts, policy and persistence.
+  addressing, protocol, transport, inbox, receipts, policy, persistence,
+  stable agent identity, groups, broadcasts, structured request/reply
+  workflows, metrics/events/health and backend-neutral local transport
+  (POSIX AF_UNIX reference; Windows named pipes with SID-bound DACLs).
   Zero runtime dependencies, no Hermes imports.
 - **Hermes Peer** (`hermes_peer`): a thin Hermes plugin — tools, slash
-  commands, lifecycle hooks and safe delivery through the public
-  `ctx.inject_message(..., mode="queue", target_session=...)` seam.
-- **Protocol** `agent-peer/1`: versioned, bounded, JSON-over-`AF_UNIX`.
+  commands, lifecycle hooks, safe delivery through the public
+  `ctx.inject_message(..., mode="queue", target_session=...)` seam, and
+  explicit desktop install for the Hermes Desktop plugin host.
+- **Protocols** `agent-peer/1` (V1, unchanged) and `agent-peer/2`
+  (V1.1 typed envelopes): versioned, bounded, JSON-over-`AF_UNIX`.
 
 ## Quick start
 
@@ -64,6 +69,12 @@ message, a reply and correlated receipts over real Unix sockets.
 - [Architecture](docs/architecture.md)
 - [Protocol v1](docs/protocol.md)
 - [Security model](docs/security.md)
+- [Groups and broadcasts](docs/groups-and-broadcasts.md)
+- [Structured request workflows](docs/request-workflows.md)
+- [Hermes Desktop plugin](docs/desktop.md)
+- [Windows support](docs/windows.md)
+- [Operations runbook](docs/operations.md)
+- [Upgrade V1 → V1.1](docs/upgrade-v1-to-v1-1.md)
 - [Troubleshooting / doctor](docs/troubleshooting.md)
 - [Compatibility](docs/compatibility.md)
 - [Review packet](docs/review/HANDOFF.md)
@@ -74,13 +85,18 @@ message, a reply and correlated receipts over real Unix sockets.
 uv sync --group dev
 uv run pytest -q
 uv run ruff check .
-uv run ty check agent_peer hermes_peer
+uv run ty check agent_peer hermes_peer dashboard
+uv run python scripts/coverage_gate.py
 uv build
+uv run python scripts/verify_wheel_assets.py
+# Desktop surface (optional, Node 22):
+cd desktop && npm ci && npm run typecheck && npm run lint && npm test && npm run build
 ```
 
-Linux is the release-blocking platform for v1. macOS CI is configured;
-macOS execution is verified post-goal on approved remote CI. Windows is out
-of scope for v1.
+Linux is the release-blocking platform for V1.1. macOS CI is configured;
+macOS execution is verified post-goal on approved remote CI. Windows is
+implemented but native release evidence is BLOCKED until an approved
+native Windows runner exists (see [docs/windows.md](docs/windows.md)).
 
 ## License
 
