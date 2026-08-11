@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 from agent_peer.models import Policy
 
@@ -38,9 +39,33 @@ def register_commands(ctx) -> None:
         description="List held peer messages; release/refuse with the agent tools.",
         args_hint="",
     )
+    ctx.register_command(
+        "peer-groups",
+        handler=cmd_peer_groups,
+        description="List persistent peer groups.",
+        args_hint="",
+    )
+    ctx.register_command(
+        "peer-group",
+        handler=cmd_peer_group,
+        description="Manage a group: create|add|remove|delete.",
+        args_hint="create <name> | add <group_id> <agent_id> | remove <group_id> <agent_id> | delete <group_id>",
+    )
+    ctx.register_command(
+        "peer-broadcast",
+        handler=cmd_peer_broadcast,
+        description="Broadcast a message to every live member of a group.",
+        args_hint="<group_id> <message>",
+    )
+    ctx.register_command(
+        "peer-request",
+        handler=cmd_peer_request,
+        description="Structured request: create|status|respond|cancel.",
+        args_hint="create <agent_id> <summary> | status <request_id> | respond <request_id> <action> | cancel <request_id>",
+    )
     ctx.register_cli_command(
         "peer",
-        help="Peer messaging: list, send, inbox, name, policy, doctor.",
+        help="Peer messaging: list, send, inbox, name, policy, doctor, groups, broadcast, request.",
         setup_fn=build_peer_cli_parser,
         handler_fn=None,
         description="Same-machine peer messaging between Hermes sessions.",
@@ -121,6 +146,96 @@ def cmd_peer_inbox(_raw: str, **kwargs) -> str:
     return "\n".join(lines)
 
 
+def cmd_peer_groups(_raw: str, **kwargs) -> str:
+    mgr = get_manager()
+    if mgr is None:
+        return "hermes-peer is not active in this process."
+    try:
+        groups = mgr.group_list()
+    except ValueError as exc:
+        return f"Group error: {exc}"
+    if not groups:
+        return "No groups."
+    lines = [f"Groups ({len(groups)}):"]
+    for g in groups:
+        lines.append(f"  {g['name']}  ({g['group_id'][:8]}…)  {g['members']} members")
+    return "\n".join(lines)
+
+
+def cmd_peer_group(raw: str, **kwargs) -> str:
+    mgr = get_manager()
+    if mgr is None:
+        return "hermes-peer is not active in this process."
+    parts = (raw or "").split()
+    if not parts:
+        return "Usage: /peer-group create <name> | add <group_id> <agent_id> | remove <group_id> <agent_id> | delete <group_id>"
+    action = parts[0].lower()
+    session_id = kwargs.get("session_id")
+    try:
+        if action == "create" and len(parts) >= 2:
+            result = mgr.group_create(" ".join(parts[1:]), session_id=session_id)
+            return f"Created group '{result['name']}' ({result['group_id']})."
+        if action == "add" and len(parts) >= 3:
+            mgr.group_add_member(parts[1], parts[2], session_id=session_id)
+            return f"Added {parts[2]} to {parts[1]}."
+        if action == "remove" and len(parts) >= 3:
+            mgr.group_remove_member(parts[1], parts[2], session_id=session_id)
+            return f"Removed {parts[2]} from {parts[1]}."
+        if action == "delete" and len(parts) >= 2:
+            mgr.group_delete(parts[1], session_id=session_id)
+            return f"Deleted group {parts[1]}."
+    except ValueError as exc:
+        return f"Group error: {exc}"
+    return "Usage: /peer-group create <name> | add <group_id> <agent_id> | remove <group_id> <agent_id> | delete <group_id>"
+
+
+def cmd_peer_broadcast(raw: str, **kwargs) -> str:
+    mgr = get_manager()
+    if mgr is None:
+        return "hermes-peer is not active in this process."
+    parts = (raw or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return "Usage: /peer-broadcast <group_id> <message>"
+    session_id = kwargs.get("session_id")
+    try:
+        result = mgr.broadcast_send(parts[0], parts[1], session_id=session_id)
+        summary = result["summary"]
+        return (
+            f"Broadcast {summary['broadcast_id'][:8]}…: "
+            f"{summary['queued']} queued, {summary['skipped']} skipped, "
+            f"{summary['unreachable']} unreachable"
+        )
+    except ValueError as exc:
+        return f"Broadcast error: {exc}"
+
+
+def cmd_peer_request(raw: str, **kwargs) -> str:
+    mgr = get_manager()
+    if mgr is None:
+        return "hermes-peer is not active in this process."
+    parts = (raw or "").split()
+    if not parts:
+        return "Usage: /peer-request create <agent_id> <summary> | status <request_id> | respond <request_id> <action> | cancel <request_id>"
+    action = parts[0].lower()
+    session_id = kwargs.get("session_id")
+    try:
+        if action == "create" and len(parts) >= 3:
+            result = mgr.create_request(parts[1], " ".join(parts[2:]), session_id=session_id)
+            return f"Request {result['request_id'][:8]}… created (delivered={result['delivered']})."
+        if action == "status" and len(parts) >= 2:
+            status = mgr.request_status(parts[1], session_id=session_id)
+            return f"Request {status['request_id'][:8]}… [{status['state']}] {status['summary']}"
+        if action == "respond" and len(parts) >= 3:
+            result = mgr.request_respond(parts[1], parts[2], session_id=session_id)
+            return f"Request {result['request_id'][:8]}… -> {result['state']}"
+        if action == "cancel" and len(parts) >= 2:
+            result = mgr.request_cancel(parts[1], session_id=session_id)
+            return f"Request {result['request_id'][:8]}… -> {result['state']}"
+    except ValueError as exc:
+        return f"Request error: {exc}"
+    return "Usage: /peer-request create <agent_id> <summary> | status <request_id> | respond <request_id> <action> | cancel <request_id>"
+
+
 # ---------------------------------------------------------------------------
 # `hermes peer ...` CLI
 # ---------------------------------------------------------------------------
@@ -148,6 +263,26 @@ def build_peer_cli_parser(subparsers) -> None:
 
     policy = peer_sub.add_parser("policy", help="Set the inbound policy.")
     policy.add_argument("policy", choices=[p.value for p in Policy])
+
+    peer_sub.add_parser("groups", help="List persistent groups.")
+    group = peer_sub.add_parser("group", help="Manage a group.")
+    group.add_argument("action", choices=["create", "add", "remove", "delete"])
+    group.add_argument("arg1", help="Group name (create) or group_id (add/remove/delete).")
+    group.add_argument("arg2", nargs="?", default=None, help="Member agent_id (add/remove).")
+
+    broadcast = peer_sub.add_parser("broadcast", help="Broadcast to every live member of a group.")
+    broadcast.add_argument("group_id")
+    broadcast.add_argument("message")
+
+    request = peer_sub.add_parser("request", help="Structured request lifecycle.")
+    request.add_argument("action", choices=["create", "status", "respond", "cancel"])
+    request.add_argument("arg1", help="Agent_id (create) or request_id (status/respond/cancel).")
+    request.add_argument("arg2", nargs="?", default=None, help="Summary (create) or action (respond).")
+    request.add_argument("arg3", nargs="?", default=None, help="Respond detail.")
+
+    desktop = peer_sub.add_parser("desktop", help="Install/status/remove the Hermes Desktop peer plugin.")
+    desktop.add_argument("action", choices=["install", "status", "remove"], default="status", nargs="?")
+    desktop.add_argument("--home", default=None, help="HERMES_HOME to install into (default: current).")
 
 
 def run_peer_cli(args) -> int:
@@ -189,8 +324,56 @@ def run_peer_cli(args) -> int:
     if action == "policy":
         print(cmd_peer_policy(args.policy))
         return 0
-    print("Usage: hermes peer {list|send|inbox|name|policy|doctor}")
+    if action == "groups":
+        print(cmd_peer_groups(""))
+        return 0
+    if action == "group":
+        raw = " ".join(
+            part for part in (args.action, args.arg1, args.arg2 or "") if part
+        )
+        print(cmd_peer_group(raw))
+        return 0
+    if action == "broadcast":
+        print(cmd_peer_broadcast(f"{args.group_id} {args.message}"))
+        return 0
+    if action == "request":
+        raw = " ".join(part for part in (args.action, args.arg1, args.arg2 or "", args.arg3 or "") if part)
+        print(cmd_peer_request(raw))
+        return 0
+    if action == "desktop":
+        return run_desktop_cli(mgr, args)
+    print("Usage: hermes peer {list|send|inbox|name|policy|doctor|groups|group|broadcast|request|desktop}")
     return 2
+
+
+def run_desktop_cli(mgr, args) -> int:
+    """`hermes peer desktop install|status|remove` (P7.7).
+
+    Explicitly installs the compiled Desktop plugin into a supplied or
+    disposable HERMES_HOME; NEVER auto-installs (G6.9).
+    """
+    from .desktop_install import (
+        desktop_plugin_status,
+        install_desktop_plugin,
+        remove_desktop_plugin,
+    )
+
+    home = Path(args.home) if args.home else None
+    try:
+        if args.action == "install":
+            target = install_desktop_plugin(home=home)
+            print(f"Installed Hermes Peer Desktop plugin at {target}")
+            return 0
+        if args.action == "remove":
+            removed = remove_desktop_plugin(home=home)
+            print("Removed Desktop plugin." if removed else "Desktop plugin not present.")
+            return 0 if removed else 1
+        status = desktop_plugin_status(home=home)
+        print(json.dumps(status, indent=2))
+        return 0 if status.get("installed") else 1
+    except (ValueError, OSError) as exc:
+        print(f"Desktop plugin error: {exc}")
+        return 1
 
 
 def peer_send_cli(mgr, args) -> str:

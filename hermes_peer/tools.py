@@ -153,6 +153,59 @@ def register_tools(ctx) -> None:
         description="Advisory cancellation of a structured request (never interrupts tools).",
         emoji="⏹️",
     )
+    ctx.register_tool(
+        "peer_group_list",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        handler=peer_group_list,
+        description="List persistent peer groups with member counts.",
+        emoji="👥",
+    )
+    ctx.register_tool(
+        "peer_group_manage",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "add_member", "remove_member", "delete"],
+                    "description": "Group operation.",
+                },
+                "name": {"type": "string", "description": "Group name (create)."},
+                "group_id": {"type": "string", "description": "Group id (add/remove/delete)."},
+                "member_agent_id": {
+                    "type": "string",
+                    "description": "Stable agent_id of the member (add/remove).",
+                },
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        handler=peer_group_manage,
+        description="Create a group, add/remove a member by stable agent_id, or delete a group.",
+        emoji="⚙️",
+    )
+    ctx.register_tool(
+        "peer_broadcast",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "group_id": {"type": "string", "description": "Group id to broadcast to."},
+                "message": {"type": "string", "description": "Message text."},
+            },
+            "required": ["group_id", "message"],
+            "additionalProperties": False,
+        },
+        handler=peer_broadcast,
+        description="Broadcast one message to every live member session of a group (partial results explicit).",
+        emoji="📣",
+    )
 
 
 def peer_list_agents(args: dict, **kwargs) -> str:
@@ -315,5 +368,63 @@ def peer_request_cancel(args: dict, **kwargs) -> str:
     session_id = kwargs.get("session_id")
     try:
         return json.dumps(mgr.request_cancel(request_id, session_id=session_id))
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def peer_group_list(args: dict, **kwargs) -> str:
+    """List persistent groups with member counts (P7.2, G3)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    try:
+        return json.dumps({"groups": mgr.group_list()})
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def peer_group_manage(args: dict, **kwargs) -> str:
+    """Create/add-member/remove-member/delete a persistent group (P7.2)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    action = (args.get("action") or "").strip()
+    session_id = kwargs.get("session_id")
+    try:
+        if action == "create":
+            name = (args.get("name") or "").strip()
+            if not name:
+                return json.dumps({"error": "name is required for create"})
+            return json.dumps(mgr.group_create(name, session_id=session_id))
+        if action in ("add_member", "remove_member"):
+            group_id = (args.get("group_id") or "").strip()
+            member = (args.get("member_agent_id") or "").strip()
+            if not group_id or not member:
+                return json.dumps({"error": "group_id and member_agent_id are required"})
+            if action == "add_member":
+                return json.dumps(mgr.group_add_member(group_id, member, session_id=session_id))
+            return json.dumps(mgr.group_remove_member(group_id, member, session_id=session_id))
+        if action == "delete":
+            group_id = (args.get("group_id") or "").strip()
+            if not group_id:
+                return json.dumps({"error": "group_id is required for delete"})
+            return json.dumps(mgr.group_delete(group_id, session_id=session_id))
+        return json.dumps({"error": f"unknown group action {action!r}"})
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def peer_broadcast(args: dict, **kwargs) -> str:
+    """Broadcast to every live member session of a group (P7.2, G3.5/G3.6)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    group_id = (args.get("group_id") or "").strip()
+    message = (args.get("message") or "").strip()
+    if not group_id or not message:
+        return json.dumps({"error": "group_id and message are required"})
+    session_id = kwargs.get("session_id")
+    try:
+        return json.dumps(mgr.broadcast_send(group_id, message, session_id=session_id))
     except ValueError as exc:
         return json.dumps({"error": str(exc)})

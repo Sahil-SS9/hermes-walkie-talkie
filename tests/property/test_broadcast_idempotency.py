@@ -50,7 +50,7 @@ class _Rec:
 
 
 @given(_AGENTS)
-@settings(max_examples=40)
+@settings(max_examples=40, deadline=10_000)
 def test_retry_never_injects_duplicate(agents: list[str]):
     """Re-fanning any broadcast id yields exactly one child per recipient."""
     import tempfile

@@ -47,7 +47,17 @@ def env(tmp_path, monkeypatch):
 
 class TestSlashCommands:
     def test_all_four_commands_registered(self, env):
-        assert set(env.commands) == {"peers", "peer-name", "peer-policy", "peer-inbox"}
+        """V1 four slash commands preserved + V2 group/request commands."""
+        assert set(env.commands) == {
+            "peers",
+            "peer-name",
+            "peer-policy",
+            "peer-inbox",
+            "peer-groups",
+            "peer-group",
+            "peer-broadcast",
+            "peer-request",
+        }
 
     def test_peers_command_lists(self, env):
         mgr = get_manager()

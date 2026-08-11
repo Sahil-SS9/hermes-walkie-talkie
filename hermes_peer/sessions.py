@@ -689,6 +689,128 @@ class PeerSessionManager:
         """Bounded expiry cleanup (P5.8)."""
         return self._request_store().expire_overdue()
 
+    # ------------------------------------------------------------------
+    # Groups and broadcasts (P4/P7)
+    # ------------------------------------------------------------------
+
+    def _group_store(self):
+        from agent_peer.groups import GroupStore
+
+        if getattr(self, "_groups", None) is None:
+            self._groups = GroupStore(self._store)
+        return self._groups
+
+    def group_create(self, name: str, *, session_id: str | None = None) -> dict:
+        """Create a group owned by the invoking session's agent (G3.1)."""
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
+        owner = rec.agent_id or rec.peer_id
+        g = self._group_store().create_group(owner, name)
+        return {"group_id": g.group_id, "name": g.name, "owner_agent_id": g.owner_agent_id}
+
+    def group_list(self, *, session_id: str | None = None) -> list[dict]:
+        groups = self._group_store().list_groups()
+        return [
+            {
+                "group_id": g.group_id,
+                "name": g.name,
+                "owner_agent_id": g.owner_agent_id,
+                "members": self._group_store().member_count(g.group_id),
+            }
+            for g in groups
+        ]
+
+    def group_add_member(
+        self, group_id: str, member_agent_id: str, *, peer_id: str = "", session_id: str | None = None
+    ) -> dict:
+        ok = self._group_store().add_member(group_id, member_agent_id, peer_id=peer_id)
+        if not ok:
+            raise ValueError(f"cannot add member: unknown group {group_id}")
+        return {"group_id": group_id, "member_agent_id": member_agent_id, "added": True}
+
+    def group_remove_member(self, group_id: str, member_agent_id: str, *, session_id: str | None = None) -> dict:
+        ok = self._group_store().remove_member(group_id, member_agent_id)
+        if not ok:
+            raise ValueError(f"cannot remove member: unknown group or member {group_id}/{member_agent_id}")
+        return {"group_id": group_id, "member_agent_id": member_agent_id, "removed": True}
+
+    def group_delete(self, group_id: str, *, session_id: str | None = None) -> dict:
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
+        owner = rec.agent_id or rec.peer_id
+        ok = self._group_store().delete_group(group_id, owner_agent_id=owner)
+        if not ok:
+            raise ValueError(f"cannot delete group {group_id}: not found or not owned by {owner}")
+        return {"group_id": group_id, "deleted": True}
+
+    def broadcast_send(
+        self,
+        group_id: str,
+        content: str,
+        *,
+        session_id: str | None = None,
+    ) -> dict:
+        """Broadcast one message to every member's live session (P4).
+
+        Persist-parent-first, deterministic per-recipient children, bounded
+        concurrency, explicit partial results (G3.5/G3.6).
+        """
+        from agent_peer.broadcast import BroadcastEngine
+
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
+        sender_agent = rec.agent_id or rec.peer_id
+        sender_peer = rec.peer_id
+        groups = self._group_store()
+        engine = BroadcastEngine(
+            self._store,
+            groups,
+            send=self._broadcast_send_one(sender_peer),
+            resolve=self._broadcast_resolve,
+            concurrency=self._config.fanout_concurrency,
+            ttl_seconds=self._config.broadcast_ttl_seconds,
+        )
+        bid = engine.create_broadcast(sender_agent, group_id, content)
+        result = engine.fan_out(bid)
+        return {"broadcast_id": result.broadcast_id, "summary": result.summary, "per_member": result.per_member}
+
+    def _broadcast_send_one(self, sender_peer_id: str):
+        """Build a send callback bound to the exact invoking session (F-03)."""
+
+        def _send(agent_id, peer_id, content, *, child_message_id=None) -> dict:
+            from agent_peer.models import Kind, PeerIdentity, make_envelope
+
+            env = make_envelope(
+                sender=PeerIdentity(peer_id=sender_peer_id, name="broadcast", profile=""),
+                recipient_peer_id=peer_id,
+                kind=Kind.MESSAGE,
+                content=content,
+            )
+            receipt = self._runtime.send(env)
+            return {"state": receipt.state.value, "detail": receipt.detail}
+
+        return _send
+
+    def _broadcast_resolve(self, agent_id, pin=None):
+        """Resolve an agent to its live primary session (G2.5)."""
+        try:
+            record = self._discovery.resolve_agent(agent_id, pinned_peer_id=pin)
+            return record
+        except Exception:  # noqa: BLE001 - fail closed to unreachable
+            return None
+
     def doctor(self) -> dict:
         """Diagnostics for `hermes peer doctor` (REL-1104, P6.3/G1.4).
 
