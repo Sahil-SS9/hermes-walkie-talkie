@@ -316,7 +316,17 @@ class PeerRuntimeManager:
         Resolves the recipient's registry record, connects to its socket,
         awaits the transport receipt (bounded) and maps failures to explicit
         receipt states.
+
+        Sender authentication (SEC-R1): the envelope's ``sender.peer_id`` must
+        match a peer registered in this runtime manager. The sender identity
+        is overridden from the registered record so the recipient sees the
+        authenticated identity, never a caller-claimed one. An unregistered
+        sender is rejected with INVALID — no spoofing is possible.
         """
+        authenticated_sender = self._authenticate_sender(envelope)
+        if authenticated_sender is None:
+            return self._receipt(envelope, ReceiptState.INVALID, "sender not registered in this runtime")
+        envelope = self._stamp_sender(envelope, authenticated_sender)
         recipient = self._registry.get(envelope.recipient_peer_id)
         if recipient is None or not recipient.socket_path:
             return self._receipt(envelope, ReceiptState.UNREACHABLE, "no registry record")
@@ -605,6 +615,33 @@ class PeerRuntimeManager:
             # Something IS listening; do not reclaim (another live instance).
             return
         self._unbind_socket(socket_path)
+
+    def _authenticate_sender(self, envelope: Envelope) -> PeerRecord | None:
+        """Return the registered peer matching the envelope's sender, or None.
+
+        SEC-R1: the sender is authenticated by matching ``sender.peer_id``
+        against the peers registered in THIS runtime manager. The bound
+        record (with the real name and profile) is the authenticated identity.
+        """
+        with self._lock:
+            for record in self._peers.values():
+                if record.peer_id == envelope.sender.peer_id:
+                    return record
+        return None
+
+    @staticmethod
+    def _stamp_sender(envelope: Envelope, record: PeerRecord) -> Envelope:
+        """Override the envelope sender with the authenticated peer record."""
+        import dataclasses
+
+        from .models import PeerIdentity
+
+        authenticated = PeerIdentity(
+            peer_id=record.peer_id,
+            name=record.name,
+            profile=record.profile,
+        )
+        return dataclasses.replace(envelope, sender=authenticated)
 
     def _receipt(self, envelope: Envelope, state: ReceiptState, detail: str) -> Receipt:
         return Receipt(

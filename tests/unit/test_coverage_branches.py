@@ -93,13 +93,36 @@ class TestRuntimeSendErrorBranches:
 
         mgr = PeerRuntimeManager(tmp_path / "runtime")
         try:
+            # SEC-R1: sender must be a registered peer. Register a sender
+            # so the auth check passes, then test unreachable recipient.
+            sender_rec = _record()
+            mgr.register_peer(sender_rec, on_message=lambda e: ReceiptState.QUEUED)
             env = make_envelope(
-                sender=PeerIdentity(peer_id=str(uuid.uuid4()), name="a", profile=""),
+                sender=PeerIdentity(peer_id=sender_rec.peer_id, name="a", profile=""),
                 recipient_peer_id=str(uuid.uuid4()),
                 content="x",
             )
             receipt = mgr.send(env)
             assert receipt.state.value == "unreachable"
+        finally:
+            mgr.shutdown()
+
+    def test_send_unregistered_sender_rejected(self, tmp_path):
+        """SEC-R1: an envelope from an unregistered sender is rejected
+        with INVALID, not delivered."""
+        from agent_peer.models import PeerIdentity, make_envelope
+        from agent_peer.runtime import PeerRuntimeManager
+
+        mgr = PeerRuntimeManager(tmp_path / "runtime")
+        try:
+            env = make_envelope(
+                sender=PeerIdentity(peer_id=str(uuid.uuid4()), name="forged", profile=""),
+                recipient_peer_id=str(uuid.uuid4()),
+                content="x",
+            )
+            receipt = mgr.send(env)
+            assert receipt.state.value == "invalid"
+            assert "not registered" in receipt.detail
         finally:
             mgr.shutdown()
 
