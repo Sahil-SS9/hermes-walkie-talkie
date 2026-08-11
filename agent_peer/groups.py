@@ -176,12 +176,14 @@ class GroupStore:
             ).fetchone()
             if exists is None:
                 return False
-            self._conn.execute(
+            cur = self._conn.execute(
                 "INSERT OR IGNORE INTO group_members (group_id, agent_id, peer_id) VALUES (?, ?, ?)",
                 (group_id, agent_id, peer_id or None),
             )
             self._conn.commit()
-            return True
+            # INSERT OR IGNORE reports rowcount 0 when the member already
+            # exists; that is an idempotent no-op, not a success.
+            return cur.rowcount == 1
 
     def remove_member(self, group_id: str, agent_id: str) -> bool:
         with self._store._lock:

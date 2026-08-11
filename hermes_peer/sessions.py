@@ -729,9 +729,19 @@ class PeerSessionManager:
     def group_add_member(
         self, group_id: str, member_agent_id: str, *, peer_id: str = "", session_id: str | None = None
     ) -> dict:
-        ok = self._group_store().add_member(group_id, member_agent_id, peer_id=peer_id)
+        store = self._group_store()
+        ok = store.add_member(group_id, member_agent_id, peer_id=peer_id)
         if not ok:
-            raise ValueError(f"cannot add member: unknown group {group_id}")
+            # Distinguish an unknown group from an idempotent duplicate:
+            # a member already present is not an error — it reports
+            # added:false (CAREFUL-1).
+            if store.get_group(group_id) is None:
+                raise ValueError(f"cannot add member: unknown group {group_id}")
+            return {
+                "group_id": group_id,
+                "member_agent_id": member_agent_id,
+                "added": False,
+            }
         return {"group_id": group_id, "member_agent_id": member_agent_id, "added": True}
 
     def group_remove_member(self, group_id: str, member_agent_id: str, *, session_id: str | None = None) -> dict:

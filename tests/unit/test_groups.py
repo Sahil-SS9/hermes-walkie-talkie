@@ -69,8 +69,9 @@ def test_membership_crud(group_store):
     a1, a2 = _agent(), _agent()
     assert group_store.add_member(g.group_id, a1) is True
     assert group_store.add_member(g.group_id, a2, peer_id=str(uuid.uuid4())) is True
-    # Idempotent re-add.
-    assert group_store.add_member(g.group_id, a1) is True
+    # Idempotent re-add reports False (member already present) and does
+    # not create a duplicate row (CAREFUL-1).
+    assert group_store.add_member(g.group_id, a1) is False
     members = group_store.members(g.group_id)
     assert len(members) == 2
     assert group_store.member_count(g.group_id) == 2
