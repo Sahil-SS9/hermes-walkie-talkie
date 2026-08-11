@@ -30,7 +30,8 @@ def test_install_status_remove_roundtrip(tmp_path):
     target = install_desktop_plugin(home=home)
     assert target == home / PLUGIN_DOOR
     assert target.exists()
-    assert target.read_text().startswith("/**") or "createPlugin" in target.read_text()
+    bundled = target.read_text()
+    assert "hermes-peer" in bundled and ("export default" in bundled or "jsxs" in bundled)
 
     status = desktop_plugin_status(home=home)
     assert status["installed"] is True

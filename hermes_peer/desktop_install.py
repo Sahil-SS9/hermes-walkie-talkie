@@ -34,22 +34,25 @@ def _bundled_plugin() -> Path:
 
 
 def install_desktop_plugin(*, home: Path | None = None) -> Path:
-    """Copy the compiled plugin.js into the Desktop plugins door.
+    """Copy the compiled plugin (plugin.js + style.css) into the Desktop
+    plugins door.
 
-    Returns the installed file path. Raises ValueError when the bundled
-    asset is missing (the P8 build has not produced it yet).
+    Returns the installed plugin.js path. Raises ValueError when the
+    bundled asset is missing (the P8 build has not produced it yet).
     """
     target_home = _resolve_home(home)
-    source = _bundled_plugin()
-    if not source.exists():
+    source_dir = _bundled_plugin().parent
+    if not _bundled_plugin().exists():
         raise ValueError(
-            f"bundled Desktop plugin asset missing: {source} — build it first (P8)"
+            f"bundled Desktop plugin asset missing: {_bundled_plugin()} — build it first (P8)"
         )
     dest_dir = target_home / "desktop-plugins" / PLUGIN_NAME
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / "plugin.js"
-    shutil.copyfile(source, dest)
-    return dest
+    for name in ("plugin.js", "style.css"):
+        src = source_dir / name
+        if src.exists():
+            shutil.copyfile(src, dest_dir / name)
+    return dest_dir / "plugin.js"
 
 
 def remove_desktop_plugin(*, home: Path | None = None) -> bool:

@@ -37,11 +37,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["agent_peer", "hermes_peer"]
+packages = ["agent_peer", "hermes_peer", "dashboard"]
 
 [tool.setuptools.package-data]
-hermes_peer = ["../plugin.yaml"]
+hermes_peer = ["../plugin.yaml", "assets/desktop/*.js", "assets/desktop/*.css"]
 agent_peer = ["py.typed"]
+dashboard = ["manifest.json", "plugin_api.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -69,4 +70,10 @@ dev = [
     "pytest-cov==6.2.1",
     "ruff==0.12.10",
     "ty==0.0.2",
+    # Dashboard plugin tests exercise the FastAPI router (runtime gets it
+    # from the Hermes core host).
+    "fastapi==0.115.6",
+    "httpx==0.27.2",
+    "pytest-asyncio==0.24.0",
+    "websockets==14.1",
 ]
