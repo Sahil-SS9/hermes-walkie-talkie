@@ -24,6 +24,11 @@ classifiers = [
 # inside a Hermes process, so no dependency is declared here.
 dependencies = []
 
+[project.optional-dependencies]
+# Native Windows named-pipe backend (ADR-0005 Candidate 2): explicit
+# SID-bound DACL. Only needed on Windows; Linux/macOS remain dependency-light.
+windows = ["pywin32==310; sys_platform == 'win32'"]
+
 [project.entry-points."hermes_agent.plugins"]
 hermes-peer = "hermes_peer.plugin:register"
 

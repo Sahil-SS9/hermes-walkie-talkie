@@ -38,7 +38,8 @@ No native Windows execution path exists on this rig (checked: wine, /mnt/c, VM â
 | Phase | Commit | Result |
 |-------|--------|--------|
 | P0 | `fa470e8` (docs, no code) | PUB verified; baseline archived; ADRs + spike reports written |
-| P1 | (pending commit) | Backend-neutral extraction: 10 conformance + 17 backend/path tests new; full suite 430 passed/4 skipped (baseline 403); ruff clean; ty clean; coverage gate PASS 91.6% |
+| P1 | `9f12f72` | Backend-neutral extraction: 10 conformance + 17 backend/path tests new; full suite 430 passed/4 skipped (baseline 403); ruff clean; ty clean; coverage gate PASS 91.6% |
+| P2 | (pending commit) | Native Windows backend: SID/DACL named pipes via pywin32 (optional extra); WindowsPathBackend under %LOCALAPPDATA%; 18 native-gated tests written (skip on Linux with explicit reason â€” never green evidence); fail-closed platform checks on Linux; ruff/ty clean; coverage gate PASS 91.6%; native gate BLOCKED on this rig |
 
 ## Environment facts
 
