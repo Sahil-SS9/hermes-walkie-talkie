@@ -125,12 +125,7 @@ def create_group(body: dict) -> dict:
 @router.get("/groups/{group_id}/members")
 def group_members(group_id: str) -> dict:
     mgr = _manager()
-    store = mgr._group_store()
-    members = [
-        {"agent_id": m.agent_id, "peer_id": m.peer_id}
-        for m in store.members(group_id)
-    ]
-    return {"group_id": group_id, "members": members}
+    return {"group_id": group_id, "members": mgr.group_members_list(group_id)}
 
 
 @router.post("/groups/{group_id}/members")
@@ -146,30 +141,10 @@ def add_member(group_id: str, body: dict) -> dict:
 def broadcast_outcomes(broadcast_id: str) -> dict:
     """Per-recipient broadcast outcomes (P8.6, G6.4)."""
     mgr = _manager()
-    try:
-        with mgr._store._lock:
-            rows = mgr._store._conn.execute(
-                "SELECT recipient_agent_id, resolved_peer_id, child_message_id, state, detail "
-                "FROM broadcast_children WHERE broadcast_id=? ORDER BY recipient_agent_id",
-                (broadcast_id,),
-            ).fetchall()
-    except Exception as exc:  # pragma: no cover - store failure
-        raise HTTPException(status_code=404, detail=f"unknown broadcast: {exc}") from exc
-    if not rows:
+    out = mgr.broadcast_outcomes(broadcast_id)
+    if not out["per_member"]:
         raise HTTPException(status_code=404, detail=f"unknown broadcast {broadcast_id}")
-    return {
-        "broadcast_id": broadcast_id,
-        "per_member": [
-            {
-                "agent_id": r[0],
-                "peer_id": r[1],
-                "child_message_id": r[2],
-                "state": r[3],
-                "detail": r[4],
-            }
-            for r in rows
-        ],
-    }
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -178,62 +153,50 @@ def broadcast_outcomes(broadcast_id: str) -> dict:
 
 
 @router.get("/inbox")
-def inbox() -> dict:
+def inbox(session_id: str | None = None) -> dict:
     mgr = _manager()
-    session_ids = list(mgr._peers.keys())
-    if not session_ids:
-        return {"messages": []}
-    return {"messages": mgr.read_inbox(session_id=session_ids[0])}
+    try:
+        return {"messages": mgr.session_inbox(session_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/requests")
-def requests() -> dict:
+def requests(session_id: str | None = None) -> dict:
     mgr = _manager()
-    session_ids = list(mgr._peers.keys())
-    if not session_ids:
-        return {"requests": []}
-    me = mgr._peers[session_ids[0]]
-    my_agent = me.agent_id or me.peer_id
-    store = mgr._request_store()
-    rows = store.list_for_recipient(my_agent)
-    return {
-        "requests": [
-            {
-                "request_id": r.request_id,
-                "sender_agent_id": r.sender_agent_id,
-                "state": r.state,
-                "summary": r.summary,
-                "created_at": r.created_at,
-                "deadline": r.deadline,
-            }
-            for r in rows
-        ]
-    }
+    try:
+        return {"requests": mgr.session_requests(session_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/requests/{request_id}")
-def request_detail(request_id: str) -> dict:
+def request_detail(request_id: str, session_id: str | None = None) -> dict:
     mgr = _manager()
-    session_ids = list(mgr._peers.keys())
-    if not session_ids:
-        raise HTTPException(status_code=404, detail="no active session")
+    # Validate the session selection first so a multi-session host cannot
+    # fall back to first-peer silently (RISKY-2).
     try:
-        return mgr.request_status(request_id, session_id=session_ids[0])
+        mgr.resolve_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        return mgr.request_status(request_id, session_id=session_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/requests/{request_id}/respond")
-def respond(request_id: str, body: dict) -> dict:
+def respond(request_id: str, body: dict, session_id: str | None = None) -> dict:
     mgr = _manager()
-    session_ids = list(mgr._peers.keys())
-    if not session_ids:
-        raise HTTPException(status_code=503, detail="no active session")
+    try:
+        mgr.resolve_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     action = (body.get("action") or "").strip()
     if action not in ("accept", "progress", "complete", "fail", "refuse"):
         raise HTTPException(status_code=400, detail=f"invalid action {action!r}")
     try:
-        return mgr.request_respond(request_id, action, detail=body.get("detail") or "", session_id=session_ids[0])
+        return mgr.request_respond(request_id, action, detail=body.get("detail") or "", session_id=session_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

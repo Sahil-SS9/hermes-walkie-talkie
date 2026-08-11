@@ -66,12 +66,55 @@ class _Mgr:
 
         return S()
 
+    def group_members_list(self, group_id):
+        from agent_peer.groups import GroupMember
+
+        return [
+            {"agent_id": m.agent_id, "peer_id": m.peer_id}
+            for m in [GroupMember(group_id=group_id, agent_id="a1", peer_id="p1")]
+        ]
+
+    def broadcast_outcomes(self, broadcast_id):
+        # Unknown broadcast -> empty per_member (route raises 404).
+        if broadcast_id != "b1":
+            return {"broadcast_id": broadcast_id, "per_member": []}
+        return {
+            "broadcast_id": broadcast_id,
+            "per_member": [
+                {
+                    "agent_id": "a1",
+                    "peer_id": "p1",
+                    "child_message_id": "c1",
+                    "state": "completed",
+                    "detail": "",
+                }
+            ],
+        }
+
     def _request_store(self):
         class RS:
             def list_for_recipient(self, agent_id):
                 return []
 
         return RS()
+
+    def resolve_session(self, session_id=None):
+        if session_id is not None and session_id not in self._peers:
+            raise ValueError(f"no active peer for session {session_id!r}")
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        return self._peers[session_id]
+
+    def session_inbox(self, session_id=None):
+        self.resolve_session(session_id)
+        return []
+
+    def session_requests(self, session_id=None):
+        self.resolve_session(session_id)
+        return []
 
     def read_inbox(self, session_id=None):
         return []
@@ -224,12 +267,16 @@ def test_inactive_manager_503(client_inactive):
 
 
 def test_no_session_inbox_requests(client_no_session):
-    assert client_no_session.get("/api/plugins/hermes-peer/inbox").json()["messages"] == []
-    assert client_no_session.get("/api/plugins/hermes-peer/requests").json()["requests"] == []
+    # No active session: the explicit-selection seam rejects with 400
+    # rather than silently returning empty data (RISKY-2).
+    r = client_no_session.get("/api/plugins/hermes-peer/inbox")
+    assert r.status_code == 400
+    r = client_no_session.get("/api/plugins/hermes-peer/requests")
+    assert r.status_code == 400
     r = client_no_session.get("/api/plugins/hermes-peer/requests/r1")
-    assert r.status_code == 404
+    assert r.status_code == 400
     r = client_no_session.post("/api/plugins/hermes-peer/requests/r1/respond", json={"action": "accept"})
-    assert r.status_code == 503
+    assert r.status_code == 400
 
 
 def test_unknown_broadcast_404(client_no_session):

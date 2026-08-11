@@ -301,6 +301,23 @@ class PeerSessionManager:
             raise ValueError(f"no active peer for session {session_id!r}")
         return rec
 
+    def resolve_session(self, session_id: str | None = None) -> PeerRecord:
+        """Public session-selection seam (RISKY-2).
+
+        Returns the exact session when ``session_id`` is supplied, or the
+        single active session when unambiguous, or raises ValueError when
+        multiple sessions are active and no explicit id is given. The
+        Dashboard must call this instead of reading ``_peers`` directly.
+        """
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            elif not self._peers:
+                raise ValueError("no active session")
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        return self._require_session(session_id)
+
     def set_alias(self, name: str, session_id: str | None = None) -> None:
         """Persist an alias for the exact invoking session (F-03/REM-205)."""
         # Backwards-compatible single-session fallback: when exactly one
@@ -470,6 +487,16 @@ class PeerSessionManager:
             else:
                 raise ValueError("no session_id supplied and multiple sessions active")
         rec = self._require_session(session_id)
+        return self._store.pending_for(rec.peer_id)
+
+    def session_inbox(self, session_id: str | None = None) -> list[dict]:
+        """Public session-scoped inbox query (RISKY-3).
+
+        Thin wrapper over read_inbox that uses the explicit session
+        selection seam; the Dashboard calls this instead of reaching into
+        ``_peers``.
+        """
+        rec = self.resolve_session(session_id)
         return self._store.pending_for(rec.peer_id)
 
     def release_message(self, message_id: str, session_id: str | None = None) -> bool:
@@ -645,6 +672,28 @@ class PeerSessionManager:
             "events": events,
         }
 
+    def session_requests(self, session_id: str | None = None) -> list[dict]:
+        """Public session-scoped request list (RISKY-3).
+
+        Requests addressed to the EXACT session's agent. Uses the explicit
+        session selection seam so the Dashboard never picks the first
+        active session implicitly.
+        """
+        rec = self.resolve_session(session_id)
+        my_agent = rec.agent_id or rec.peer_id
+        store = self._request_store()
+        return [
+            {
+                "request_id": r.request_id,
+                "sender_agent_id": r.sender_agent_id,
+                "state": r.state,
+                "summary": r.summary,
+                "created_at": r.created_at,
+                "deadline": r.deadline,
+            }
+            for r in store.list_for_recipient(my_agent)
+        ]
+
     def request_respond(
         self,
         request_id: str,
@@ -726,6 +775,19 @@ class PeerSessionManager:
             for g in groups
         ]
 
+    def group_members_list(self, group_id: str) -> list[dict]:
+        """Public group-members query (RISKY-3).
+
+        Returns member dicts; unknown groups return an empty list.
+        """
+        store = self._group_store()
+        if store.get_group(group_id) is None:
+            return []
+        return [
+            {"agent_id": m.agent_id, "peer_id": m.peer_id}
+            for m in store.members(group_id)
+        ]
+
     def group_add_member(
         self, group_id: str, member_agent_id: str, *, peer_id: str = "", session_id: str | None = None
     ) -> dict:
@@ -797,6 +859,33 @@ class PeerSessionManager:
         bid = engine.create_broadcast(sender_agent, group_id, content)
         result = engine.fan_out(bid)
         return {"broadcast_id": result.broadcast_id, "summary": result.summary, "per_member": result.per_member}
+
+    def broadcast_outcomes(self, broadcast_id: str) -> dict:
+        """Public broadcast-outcomes query (RISKY-3).
+
+        Reads recorded per-recipient outcomes from the store without
+        exposing SQLite. Unknown broadcasts return an empty per_member
+        list (Dashboard decides the 404).
+        """
+        with self._store._lock:
+            rows = self._store._conn.execute(
+                "SELECT recipient_agent_id, resolved_peer_id, child_message_id, state, detail "
+                "FROM broadcast_children WHERE broadcast_id=? ORDER BY recipient_agent_id",
+                (broadcast_id,),
+            ).fetchall()
+        return {
+            "broadcast_id": broadcast_id,
+            "per_member": [
+                {
+                    "agent_id": r[0],
+                    "peer_id": r[1],
+                    "child_message_id": r[2],
+                    "state": r[3],
+                    "detail": r[4],
+                }
+                for r in rows
+            ],
+        }
 
     def _broadcast_send_one(self, sender_peer_id: str):
         """Build a send callback bound to the exact invoking session (F-03)."""
