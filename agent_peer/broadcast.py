@@ -13,9 +13,9 @@ multi-recipient transport frame:
 
 from __future__ import annotations
 
-import threading
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -168,8 +168,9 @@ class BroadcastEngine:
                 )
             self._conn.commit()
 
-        # Bounded concurrent sends (G3.8): a worker pool capped at
-        # concurrency, preserving per-member order in the result.
+        # Bounded concurrent sends (G3.8): a ThreadPoolExecutor capped at
+        # concurrency preserves per-member order in the result with less
+        # lifecycle code than one thread per member (CAREFUL-4).
         results: list[dict] = [None] * len(resolved)  # type: ignore[list-item]
         failures = {"count": 0, "items": []}
 
@@ -203,19 +204,15 @@ class BroadcastEngine:
                 "detail": final_detail,
             }
 
-        sem = threading.Semaphore(self._concurrency)
-        threads: list[threading.Thread] = []
-
-        def run(idx: int, *args) -> None:
-            with sem:
-                work(idx, *args)
-
-        for idx, (agent, peer, child, state, detail) in enumerate(resolved):
-            t = threading.Thread(target=run, args=(idx, agent, peer, child, state, detail), daemon=True)
-            threads.append(t)
-            t.start()
-        for t in threads:
-            t.join()
+        with ThreadPoolExecutor(max_workers=self._concurrency) as pool:
+            futures = [
+                pool.submit(work, idx, agent, peer, child, state, detail)
+                for idx, (agent, peer, child, state, detail) in enumerate(resolved)
+            ]
+            for future in futures:
+                # Work never raises: exceptions are contained per child and
+                # recorded in results/failures. join() surfaces nothing.
+                future.result()
 
         with self._store._lock:
             self._conn.execute(
