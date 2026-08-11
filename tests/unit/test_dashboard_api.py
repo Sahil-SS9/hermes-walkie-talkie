@@ -155,12 +155,17 @@ def test_request_detail_and_respond(client):
     assert r.status_code == 400
 
 
-def test_events_websocket(client):
+def test_events_websocket(client, monkeypatch):
     """The /events socket upgrades, subscribes and cleans up on close.
 
     (The keepalive loop is exercised implicitly; polling remains the
-    authoritative fallback when sockets are unavailable — G6.7.)
+    authoritative fallback when sockets are unavailable — G6.7. The auth
+    gate is injected here; fail-closed behaviour is covered by
+    test_ws_auth_fails_closed and test_events_websocket_unauthorized_closes.)
     """
+    import dashboard.plugin_api as api
+
+    monkeypatch.setattr(api, "_ws_upgrade_authorized", lambda ws: True)
     with client.websocket_connect("/api/plugins/hermes-peer/events") as ws:
         ws.send_text("ping")
         # The handler drains then waits for the next client message; sending

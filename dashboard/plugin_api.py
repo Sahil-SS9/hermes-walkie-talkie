@@ -39,16 +39,25 @@ def _manager():
 
 
 def _ws_upgrade_authorized(ws: WebSocket) -> bool:
-    """Delegate to the dashboard's canonical WS auth gate (G6.7)."""
+    """Delegate to the dashboard's canonical WS auth gate (G6.7).
+
+    Fails closed (RISKY-1): if the auth module cannot be imported or the
+    delegate raises, the upgrade is REJECTED. A broken production import
+    must never become an authentication bypass. Tests inject the auth
+    decision by monkeypatching this function or the delegate module.
+    """
     try:
         import importlib
 
         _ws = importlib.import_module("hermes_cli.web_server")
     except Exception:
-        # No dashboard context (tests): accept so the tail loop stays
-        # testable; production always imports cleanly.
-        return True
-    return bool(_ws._ws_auth_ok(ws))
+        log.error("hermes_cli.web_server import failed; rejecting WS upgrade (fail closed)")
+        return False
+    try:
+        return bool(_ws._ws_auth_ok(ws))
+    except Exception:
+        log.error("WS auth delegate raised; rejecting WS upgrade (fail closed)")
+        return False
 
 
 # ---------------------------------------------------------------------------
