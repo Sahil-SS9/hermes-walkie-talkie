@@ -22,7 +22,7 @@ from .models import Receipt, ReceiptState
 
 logger = logging.getLogger("agent_peer.store")
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -44,6 +44,43 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_state
     ON messages(recipient_peer_id, state);
 CREATE INDEX IF NOT EXISTS idx_messages_created
     ON messages(created_at);
+CREATE TABLE IF NOT EXISTS groups (
+    group_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    owner_agent_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    peer_id TEXT,
+    PRIMARY KEY (group_id, agent_id),
+    FOREIGN KEY (group_id) REFERENCES groups(group_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS broadcasts (
+    broadcast_id TEXT PRIMARY KEY,
+    sender_agent_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS broadcast_children (
+    broadcast_id TEXT NOT NULL,
+    recipient_agent_id TEXT NOT NULL,
+    resolved_peer_id TEXT NOT NULL,
+    child_message_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (broadcast_id, recipient_agent_id, resolved_peer_id),
+    FOREIGN KEY (broadcast_id) REFERENCES broadcasts(broadcast_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_agent
+    ON group_members(agent_id);
+CREATE INDEX IF NOT EXISTS idx_broadcasts_group
+    ON broadcasts(group_id);
 """
 
 _MIGRATIONS: dict[int, list[str]] = {
@@ -51,6 +88,42 @@ _MIGRATIONS: dict[int, list[str]] = {
     # (old records remain readable as V1, P3.6).
     2: [
         "ALTER TABLE messages ADD COLUMN protocol TEXT NOT NULL DEFAULT 'agent-peer/1'",
+    ],
+    # v2 -> v3: groups, memberships, broadcasts, children (P4).
+    3: [
+        """CREATE TABLE IF NOT EXISTS groups (
+            group_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            owner_agent_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 0
+        )""",
+        """CREATE TABLE IF NOT EXISTS group_members (
+            group_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            peer_id TEXT,
+            PRIMARY KEY (group_id, agent_id)
+        )""",
+        """CREATE TABLE IF NOT EXISTS broadcasts (
+            broadcast_id TEXT PRIMARY KEY,
+            sender_agent_id TEXT NOT NULL,
+            group_id TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS broadcast_children (
+            broadcast_id TEXT NOT NULL,
+            recipient_agent_id TEXT NOT NULL,
+            resolved_peer_id TEXT NOT NULL,
+            child_message_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (broadcast_id, recipient_agent_id, resolved_peer_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_group_members_agent ON group_members(agent_id)",
+        "CREATE INDEX IF NOT EXISTS idx_broadcasts_group ON broadcasts(group_id)",
     ],
 }
 

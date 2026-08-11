@@ -40,3 +40,10 @@ INBOX_CAPACITY = 100                    # pending messages per peer
 
 # Policy
 DEFAULT_INBOUND_POLICY = "accept"       # accept | hold | refuse
+
+# Groups and broadcasts (P4, ADR-0004)
+DEFAULT_GROUP_CAP = 32                  # default max resolved recipients
+HARD_GROUP_CAP = 128                    # hard ceiling
+DEFAULT_FANOUT_CONCURRENCY = 8
+BROADCAST_TTL_SECONDS = 300
+BROADCAST_MAX_RETRIES = 2

@@ -60,20 +60,20 @@ def _has_protocol_col(store: MessageStore) -> bool:
     return "protocol" in cols
 
 
-def test_fresh_db_is_v2():
+def test_fresh_db_is_latest_version():
     store, _ = _tmp_store()
     try:
-        assert _version(store) == 2
+        assert _version(store) == 3  # schema is at v3 after P4 tables
         assert _has_protocol_col(store)
     finally:
         store.close()
 
 
-def test_v1_db_upgrades_to_v2_old_rows_readable():
+def test_v1_db_upgrades_to_latest_old_rows_readable():
     _, db = _tmp_v1_db()
     store = MessageStore(db)
     try:
-        assert _version(store) == 2
+        assert _version(store) == 3  # v1 -> latest via incremental migrations
         assert _has_protocol_col(store)
         # A V1-style row (no protocol key) defaults to agent-peer/1, so old
         # records remain readable as V1 (P3.6).
@@ -103,7 +103,7 @@ def test_migration_is_idempotent():
     # Second reopen must NOT attempt the ALTER again (no duplicate column).
     s2 = MessageStore(db)
     try:
-        assert _version(s2) == 2
+        assert _version(s2) == 3
         assert _has_protocol_col(s2)
     finally:
         s2.close()
