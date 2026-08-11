@@ -26,6 +26,8 @@
 - Command: `.venv/bin/python -m pytest -q` in standalone worktree @ f6d45194
 - Result: `403 passed, 4 skipped` (skips: 2 missing hermes-core imports â€” expected standalone; 2 chown-ineligible)
 - Runner: Python 3.12.3, uv 0.11.28, Linux
+- Core affected baseline @ 2a853f86 (clean draft-PR head, `.venv/bin/python -m pytest`): `590 passed` across the 7 affected files
+- PLAN PATH DEVIATION: plan lists `tests/hermes_cli/test_session_boundary_hooks.py`; actual path in this core tree is `tests/cli/test_session_boundary_hooks.py`. All other listed paths exist.
 
 ## Windows native gate note
 
@@ -35,7 +37,8 @@ No native Windows execution path exists on this rig (checked: wine, /mnt/c, VM â
 
 | Phase | Commit | Result |
 |-------|--------|--------|
-| P0 | (docs, no code) | PUB verified; baseline archived; ADRs + spike reports written |
+| P0 | `fa470e8` (docs, no code) | PUB verified; baseline archived; ADRs + spike reports written |
+| P1 | (pending commit) | Backend-neutral extraction: 10 conformance + 17 backend/path tests new; full suite 430 passed/4 skipped (baseline 403); ruff clean; ty clean; coverage gate PASS 91.6% |
 
 ## Environment facts
 

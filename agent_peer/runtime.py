@@ -34,13 +34,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .codec import FrameDecoder, encode_envelope
+from .codec import FrameDecoder, decode_envelope, encode_envelope
 from .constants import PROTOCOL_ID, RECEIPT_TIMEOUT
 from .errors import AgentPeerError, FrameError, TimeoutError_, UnreachableError
 from .models import Envelope, Kind, PeerRecord, Receipt, ReceiptState
 from .paths import RuntimePaths, select_runtime_dir
 from .registry import Registry
-from .transport import PeerClient, peer_credentials, verify_peer_credentials
 
 logger = logging.getLogger("agent_peer.runtime")
 
@@ -89,22 +88,33 @@ class PeerRuntimeManager:
     _instance: PeerRuntimeManager | None = None
     _instance_lock = threading.Lock()
 
-    def __init__(self, runtime_root: Path | RuntimePaths | None = None, registry: Registry | None = None) -> None:
+    def __init__(
+        self,
+        runtime_root: Path | RuntimePaths | None = None,
+        registry: Registry | None = None,
+        backend=None,
+        path_backend=None,
+    ) -> None:
+        from .backends import get_transport_backend
+        from .platform_paths import get_path_backend
+
         self._paths = (
             runtime_root
             if isinstance(runtime_root, RuntimePaths)
             else RuntimePaths(runtime_root or select_runtime_dir())
         )
         self._registry = registry or Registry(self._paths)
+        self._backend = backend or get_transport_backend()
+        self._path_backend = path_backend or get_path_backend()
         self._selector = selectors.DefaultSelector()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._peers: dict[str, PeerRecord] = {}
         self._connections: dict[socket.socket, _Connection] = {}
         self._handlers: dict[str, MessageHandler] = {}
-        # peer_id -> listening socket (exact ownership, REM-405).
-        self._listeners: dict[str, socket.socket] = {}
-        self._listener_owners: dict[socket.socket, str] = {}
+        # peer_id -> listening handle (exact ownership, REM-405).
+        self._listeners: dict[str, object] = {}
+        self._listener_owners: dict[object, str] = {}
         self._lock = threading.RLock()
         self._wakeup_r, self._wakeup_w = os.pipe()
         self._selector.register(self._wakeup_r, selectors.EVENT_READ, "wakeup")
@@ -138,12 +148,15 @@ class PeerRuntimeManager:
         with self._lock:
             socket_path = self._paths.socket_path_for(record.peer_id, record.instance_id)
             self._reclaim_stale_socket(socket_path)
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener = None
             try:
-                sock.bind(str(socket_path))
-                os.chmod(socket_path, 0o600)
-                sock.listen(64)
-                sock.setblocking(False)
+                # Bind through the injected transport backend (AF_UNIX on
+                # POSIX; named pipes on Windows) — the backend owns the
+                # platform mechanics, the supervisor owns the selector loop.
+                listener = self._backend.bind_listener(
+                    socket_path,
+                    instance_id=record.instance_id,
+                )
                 # Capture the bound socket's UID and inode (REM-105/106).
                 st = socket_path.stat()
                 import dataclasses
@@ -155,11 +168,11 @@ class PeerRuntimeManager:
                     socket_inode=st.st_ino,
                     protocol=record.protocol or PROTOCOL_ID,
                 )
-                self._selector.register(sock, selectors.EVENT_READ, "listen")
+                self._selector.register(listener, selectors.EVENT_READ, "listen")
                 self._peers[record.peer_id] = record
                 self._handlers[record.peer_id] = on_message
-                self._listeners[record.peer_id] = sock
-                self._listener_owners[sock] = record.peer_id
+                self._listeners[record.peer_id] = listener
+                self._listener_owners[listener] = record.peer_id
                 self._ensure_thread()
                 if self._thread is None or not self._thread.is_alive():
                     raise RuntimeError("peer supervisor failed to start")
@@ -175,12 +188,10 @@ class PeerRuntimeManager:
                 return handle
             except Exception:
                 # Close/unregister the listener and leave no record.
-                with suppress(Exception):
-                    self._selector.unregister(sock)
-                with contextlib.suppress(OSError):
-                    sock.close()
-                with contextlib.suppress(OSError):
-                    socket_path.unlink()
+                if listener is not None:
+                    with suppress(Exception):
+                        self._selector.unregister(listener)
+                    listener.close()
                 self._peers.pop(record.peer_id, None)
                 self._handlers.pop(record.peer_id, None)
                 owned_listener = self._listeners.pop(record.peer_id, None)
@@ -250,13 +261,14 @@ class PeerRuntimeManager:
                 else self._paths.socket_path_for(peer_id)
             )
 
-            # 2+3. Unregister and close the exact listener FD.
+            # 2+3. Unregister and close the exact listener FD. The endpoint
+            # path is NOT touched here — step 6 unlinks only after the
+            # UID/inode fence proves the path is still the exact owned one.
             if listener is not None:
                 self._listener_owners.pop(listener, None)
                 with suppress(Exception):
-                    self._selector.unregister(listener)
-                with contextlib.suppress(OSError):
-                    listener.close()
+                    self._selector.unregister(listener)  # type: ignore[arg-type]
+                listener.close_fd()  # type: ignore[attr-defined]
 
             # 4. Close accepted connections belonging to this listener/peer.
             for conn in list(self._connections.keys()):
@@ -309,8 +321,12 @@ class PeerRuntimeManager:
         if recipient is None or not recipient.socket_path:
             return self._receipt(envelope, ReceiptState.UNREACHABLE, "no registry record")
         try:
-            client = PeerClient(recipient.socket_path, receipt_timeout=RECEIPT_TIMEOUT)
-            reply = client.request(envelope)
+            endpoint = self._backend_endpoint(recipient.socket_path)
+            payload = encode_envelope(envelope).encode("utf-8")
+            reply_payload = self._backend.request(
+                endpoint, payload, timeout=RECEIPT_TIMEOUT
+            )
+            reply = decode_envelope(reply_payload)
         except UnreachableError as exc:
             return self._receipt(envelope, ReceiptState.UNREACHABLE, str(exc))
         except TimeoutError_ as exc:
@@ -396,18 +412,19 @@ class PeerRuntimeManager:
                 self._stop_event.set()
                 self._wakeup()
 
-    def _accept(self, listen_sock: socket.socket) -> None:
+    def _accept(self, listen_handle: object) -> None:
         try:
-            conn, _ = listen_sock.accept()
+            conn = listen_handle.accept()  # type: ignore[attr-defined]
         except OSError:
             return
         conn.setblocking(False)
-        if not verify_peer_credentials(peer_credentials(conn)):
-            logger.warning("dropping connection from foreign UID")
+        evidence = self._backend.verify_remote_owner(conn)
+        if not evidence.authenticated:
+            logger.warning("dropping connection from foreign owner: %s", evidence.detail)
             with contextlib.suppress(OSError):
                 conn.close()
             return
-        listener_peer_id = self._listener_owners.get(listen_sock)
+        listener_peer_id = self._listener_owners.get(listen_handle)
         if listener_peer_id is None:
             with contextlib.suppress(OSError):
                 conn.close()
@@ -570,20 +587,21 @@ class PeerRuntimeManager:
         except OSError:
             logger.warning("could not unlink socket %s", socket_path)
 
+    def _backend_endpoint(self, socket_path: str):
+        """Wrap a recorded socket path as a backend transport endpoint."""
+        from .backends.base import TransportEndpoint
+
+        return TransportEndpoint(kind="unix", address=socket_path)
+
     def _reclaim_stale_socket(self, socket_path: Path) -> None:
         """Crash recovery: remove a stale socket only if nothing listens on it."""
         if not socket_path.exists():
             return
-        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        probe.settimeout(0.5)
-        try:
-            probe.connect(str(socket_path))
+        endpoint = self._backend_endpoint(str(socket_path))
+        if self._backend.bound(endpoint, timeout=0.5):
             # Something IS listening; do not reclaim (another live instance).
-            probe.close()
             return
-        except OSError:
-            probe.close()
-            self._unbind_socket(socket_path)
+        self._unbind_socket(socket_path)
 
     def _receipt(self, envelope: Envelope, state: ReceiptState, detail: str) -> Receipt:
         return Receipt(
