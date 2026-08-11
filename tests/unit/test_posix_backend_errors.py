@@ -72,3 +72,94 @@ class TestPosixBackendErrors:
             kind="unix", address=f"/tmp/agent-peer-{os.getuid()}/no-such-sock-{os.getpid()}"
         )
         assert backend.bound(endpoint, timeout=0.2) is False
+
+    def test_request_credential_fail_rejected(self, monkeypatch):
+        """A socket whose peer credentials do not verify must be refused."""
+        import agent_peer.backends.posix as posixmod
+
+        monkeypatch.setattr(posixmod, "peer_credentials", lambda sock: {})
+        backend = PosixTransportBackend()
+        root = Path(tempfile.mkdtemp())
+        sock_path = root / "cred.sock"
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(str(sock_path))
+        srv.listen(1)
+        ready = threading.Event()
+
+        def serve() -> None:
+            srv.accept()
+            ready.set()
+
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        endpoint = TransportEndpoint(kind="unix", address=str(sock_path))
+        with pytest.raises(UnreachableError, match="credential"):
+            backend.request(endpoint, _frame(b"ping"), timeout=2)
+        ready.wait(2)
+        srv.close()
+
+    def test_request_clean_close_is_unreachable(self):
+        """Server reads then closes cleanly: client recv sees EOF (not RST)
+        and must raise UnreachableError."""
+        root = Path(tempfile.mkdtemp())
+        sock_path = root / "eof.sock"
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(str(sock_path))
+        srv.listen(1)
+        done = threading.Event()
+
+        def serve() -> None:
+            conn, _ = srv.accept()
+            conn.recv(4096)  # drain the frame
+            conn.close()  # clean EOF, not reset
+            done.set()
+
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        backend = PosixTransportBackend()
+        endpoint = TransportEndpoint(kind="unix", address=str(sock_path))
+        with pytest.raises(UnreachableError):
+            backend.request(endpoint, _frame(b"ping"), timeout=2)
+        done.wait(2)
+        srv.close()
+
+    def test_request_reply_iteration(self):
+        """Server replies with a framed payload: the decoder feed loop
+        yields the reply (happy-path branch)."""
+        import agent_peer.backends.posix as posixmod
+
+        root = Path(tempfile.mkdtemp())
+        sock_path = root / "reply.sock"
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(str(sock_path))
+        srv.listen(1)
+        done = threading.Event()
+
+        def serve() -> None:
+            conn, _ = srv.accept()
+            conn.recv(4096)
+            conn.sendall(posixmod._frame(b"pong"))
+            conn.close()
+            done.set()
+
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        backend = PosixTransportBackend()
+        endpoint = TransportEndpoint(kind="unix", address=str(sock_path))
+        reply = backend.request(endpoint, _frame(b"ping"), timeout=2)
+        assert reply == b"pong"
+        done.wait(2)
+        srv.close()
+
+    def test_verify_remote_owner_socket_foreign_uid(self, monkeypatch):
+        """A socket whose credentials do not verify returns authenticated
+        False with a same-UID detail string."""
+        import agent_peer.backends.posix as posixmod
+
+        monkeypatch.setattr(posixmod, "peer_credentials", lambda sock: {"uid": 9999})
+        backend = PosixTransportBackend()
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        evidence = backend.verify_remote_owner(sock)
+        assert evidence.authenticated is False
+        assert evidence.detail == "SO_PEERCRED foreign UID"
+        sock.close()

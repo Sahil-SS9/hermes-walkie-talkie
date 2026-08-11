@@ -54,7 +54,6 @@ class _Mgr:
 
     def request_respond(self, request_id, action, *, session_id=None):
         return {"request_id": request_id, "state": "completed"}
-
     def request_cancel(self, request_id, *, session_id=None):
         return {"request_id": request_id, "state": "cancelled"}
 
@@ -141,3 +140,127 @@ def test_request_tools_error_branches(monkeypatch):
     monkeypatch.setattr(toolsmod, "get_manager", lambda: _Boom())
     result = json.loads(peer_request_status({"request_id": "r"}))
     assert "error" in result and "not found" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# P11.1 edge branches: inactive manager, empty name, groups rendering,
+# desktop CLI, and the main dispatch table
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_name_inactive_and_empty(monkeypatch):
+    import hermes_peer.commands as cmdmod
+
+    monkeypatch.setattr(cmdmod, "get_manager", lambda: None)
+    assert "not active" in cmdmod.cmd_peer_name("")
+    monkeypatch.setattr(cmdmod, "get_manager", lambda: _Mgr())
+    assert "Usage" in cmdmod.cmd_peer_name("  ")
+
+
+def test_cmd_groups_inactive_and_rendered(mgr, monkeypatch):
+    import hermes_peer.commands as cmdmod
+
+    monkeypatch.setattr(cmdmod, "get_manager", lambda: None)
+    assert "not active" in cmdmod.cmd_peer_groups("")
+    monkeypatch.setattr(cmdmod, "get_manager", lambda: mgr)
+    mgr.groups = [{"name": "team", "group_id": "g12345678", "members": 2}]
+    out = cmdmod.cmd_peer_groups("")
+    assert "team" in out and "2 members" in out
+
+
+def test_cmd_group_inactive(monkeypatch):
+    import hermes_peer.commands as cmdmod
+
+    monkeypatch.setattr(cmdmod, "get_manager", lambda: None)
+    assert "not active" in cmdmod.cmd_peer_group("create x")
+
+
+def test_cmd_broadcast_inactive(monkeypatch):
+    import hermes_peer.commands as cmdmod
+
+    monkeypatch.setattr(cmdmod, "get_manager", lambda: None)
+    assert "not active" in cmdmod.cmd_peer_broadcast("g1 hi")
+
+
+def test_desktop_cli_install_remove_status(mgr, monkeypatch, tmp_path):
+    import hermes_peer.commands as cmdmod
+    import hermes_peer.desktop_install as di
+
+    # Install: uses the bundled asset path; monkeypatch to a temp asset.
+    assets = tmp_path / "assets" / "desktop"
+    assets.mkdir(parents=True)
+    (assets / "plugin.js").write_text("export default {};", encoding="utf-8")
+    (assets / "style.css").write_text("", encoding="utf-8")
+    monkeypatch.setattr(di, "_bundled_plugin", lambda: assets / "plugin.js")
+
+    class Args:
+        action = "install"
+        home = str(tmp_path / "home")
+
+    assert cmdmod.run_desktop_cli(mgr, Args()) == 0
+
+    Args.action = "status"
+    assert cmdmod.run_desktop_cli(mgr, Args()) == 0
+
+    Args.action = "remove"
+    assert cmdmod.run_desktop_cli(mgr, Args()) == 0
+    # Second remove: not present -> exit 1.
+    assert cmdmod.run_desktop_cli(mgr, Args()) == 1
+
+
+def test_main_dispatch_table(mgr, monkeypatch, tmp_path, capsys):
+    import hermes_peer.commands as cmdmod
+    import hermes_peer.desktop_install as di
+
+    assets = tmp_path / "assets" / "desktop"
+    assets.mkdir(parents=True)
+    (assets / "plugin.js").write_text("export default {};", encoding="utf-8")
+    monkeypatch.setattr(di, "_bundled_plugin", lambda: assets / "plugin.js")
+
+    class Args:
+        peer_action = "groups"
+        action = "install"
+        name = None
+        policy = None
+        arg1 = arg2 = arg3 = None
+        group_id = None
+        message = None
+        message_id = None
+        home = None
+
+    assert cmdmod.run_peer_cli(Args()) == 0
+
+    Args.peer_action = "group"
+    Args.action = "create"
+    Args.arg1 = "cli-team"
+    assert cmdmod.run_peer_cli(Args()) == 0
+
+    Args.peer_action = "broadcast"
+    Args.group_id = "g1"
+    Args.message = "hi"
+    assert cmdmod.run_peer_cli(Args()) == 0
+
+    Args.peer_action = "request"
+    Args.action = "create"
+    Args.arg1 = "agent-1"
+    Args.arg2 = "task"
+    assert cmdmod.run_peer_cli(Args()) == 0
+
+    Args.peer_action = "desktop"
+    Args.action = "install"
+    Args.home = str(tmp_path / "home")
+    assert cmdmod.run_peer_cli(Args()) == 0
+
+    Args.peer_action = "unknown"
+    assert cmdmod.run_peer_cli(Args()) == 2
+
+    # Inactive manager -> exit 1.
+    monkeypatch.setattr(cmdmod, "get_manager", lambda: None)
+    Args.peer_action = "groups"
+    assert cmdmod.run_peer_cli(Args()) == 1
+
+    # Desktop with no HERMES_HOME and no --home fails closed -> exit 1.
+    Args.peer_action = "desktop"
+    Args.action = "install"
+    Args.home = None
+    assert cmdmod.run_peer_cli(Args()) == 1

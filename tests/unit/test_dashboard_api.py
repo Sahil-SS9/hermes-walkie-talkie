@@ -168,4 +168,101 @@ def test_events_websocket(client):
         ws.send_text("ping")
         data = ws.receive_json()
         assert "events" in data
-    # Exiting the context closes the socket; unsubscribe runs in finally.
+
+
+# ---------------------------------------------------------------------------
+# Edge branches (P11.1): inactive manager, empty sessions, unknown broadcast
+# ---------------------------------------------------------------------------
+
+
+class _NoSessionMgr(_Mgr):
+    """Same stub but no active sessions (empty _peers)."""
+
+    def __init__(self) -> None:
+        self.groups = []
+        self._peers: dict[str, object] = {}
+
+    def _broadcast_store(self):
+        class BS:
+            def children(self, broadcast_id):
+                return []
+
+        return BS()
+
+
+@pytest.fixture()
+def client_no_session(monkeypatch):
+    app = FastAPI()
+    import dashboard.plugin_api as api
+
+    monkeypatch.setattr(api, "_manager", lambda: _NoSessionMgr())
+    app.include_router(api.router, prefix="/api/plugins/hermes-peer")
+    return TestClient(app)
+
+
+@pytest.fixture()
+def client_inactive(monkeypatch):
+    app = FastAPI()
+    import dashboard.plugin_api as api
+
+    import hermes_peer.plugin as hpp
+
+    monkeypatch.setattr(hpp, "get_manager", lambda: None)
+    app.include_router(api.router, prefix="/api/plugins/hermes-peer")
+    return TestClient(app)
+
+
+def test_inactive_manager_503(client_inactive):
+    r = client_inactive.get("/api/plugins/hermes-peer/health")
+    assert r.status_code == 503
+    r = client_inactive.get("/api/plugins/hermes-peer/peers")
+    assert r.status_code == 503
+
+
+def test_no_session_inbox_requests(client_no_session):
+    assert client_no_session.get("/api/plugins/hermes-peer/inbox").json()["messages"] == []
+    assert client_no_session.get("/api/plugins/hermes-peer/requests").json()["requests"] == []
+    r = client_no_session.get("/api/plugins/hermes-peer/requests/r1")
+    assert r.status_code == 404
+    r = client_no_session.post("/api/plugins/hermes-peer/requests/r1/respond", json={"action": "accept"})
+    assert r.status_code == 503
+
+
+def test_unknown_broadcast_404(client_no_session):
+    r = client_no_session.get("/api/plugins/hermes-peer/broadcasts/nope")
+    assert r.status_code == 404
+
+
+def test_manager_import_failure_503(monkeypatch):
+    """The plugin import path failing must surface as 503, not crash."""
+    import builtins
+
+    app = FastAPI()
+    import dashboard.plugin_api as api
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "hermes_peer.plugin":
+            raise ImportError("plugin not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    app.include_router(api.router, prefix="/api/plugins/hermes-peer")
+    r = TestClient(app).get("/api/plugins/hermes-peer/health")
+    assert r.status_code == 503
+
+
+def test_events_websocket_unauthorized_closes(monkeypatch):
+    """When the dashboard auth gate refuses, the socket closes cleanly."""
+    app = FastAPI()
+    import dashboard.plugin_api as api
+
+    monkeypatch.setattr(api, "_manager", lambda: _Mgr())
+    monkeypatch.setattr(api, "_ws_upgrade_authorized", lambda ws: False)
+    app.include_router(api.router, prefix="/api/plugins/hermes-peer")
+    client = TestClient(app)
+    with pytest.raises(Exception):
+        with client.websocket_connect("/api/plugins/hermes-peer/events") as ws:
+            ws.send_text("ping")
+            ws.receive_json()
