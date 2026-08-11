@@ -37,6 +37,7 @@ _TRANSITIONS: dict[tuple[RequestState, RequestState], str] = {
     (RequestState.ACCEPTED, RequestState.IN_PROGRESS): "progress",
     (RequestState.ACCEPTED, RequestState.CANCELLED): "cancel_before_start",
     (RequestState.ACCEPTED, RequestState.FAILED): "fail_before_start",
+    (RequestState.ACCEPTED, RequestState.EXPIRED): "expiry",
     (RequestState.IN_PROGRESS, RequestState.COMPLETED): "complete",
     (RequestState.IN_PROGRESS, RequestState.FAILED): "fail",
     (RequestState.IN_PROGRESS, RequestState.CANCELLED): "cancel_advisory",

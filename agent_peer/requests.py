@@ -172,14 +172,14 @@ class RequestStore:
         return self.get(request_id)
 
     def expire_overdue(self, now: str | None = None) -> int:
-        """Bounded expiry: created/queued/in_progress requests past deadline
-        become expired (P5.8). Returns the number expired."""
+        """Bounded expiry: created/queued/accepted/in_progress requests past
+        deadline become expired (P5.8, CAREFUL-2). Returns the count."""
         ref = now or _now_iso()
         count = 0
         with self._store._lock:
             rows = self._conn.execute(
-                "SELECT request_id FROM requests WHERE state IN ('created','queued','in_progress') "
-                "AND deadline < ?",
+                "SELECT request_id FROM requests WHERE state IN "
+                "('created','queued','accepted','in_progress') AND deadline < ?",
                 (ref,),
             ).fetchall()
             for (rid,) in rows:
