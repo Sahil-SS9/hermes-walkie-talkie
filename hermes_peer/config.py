@@ -18,7 +18,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from agent_peer.constants import PROTOCOL_ID, PROTOCOL_ID_V2
+from agent_peer.constants import (
+    BROADCAST_TTL_SECONDS,
+    DEFAULT_FANOUT_CONCURRENCY,
+    DEFAULT_GROUP_CAP,
+    HARD_GROUP_CAP,
+    PROTOCOL_ID,
+    PROTOCOL_ID_V2,
+)
 from agent_peer.models import Policy
 
 PLUGIN_ID = "hermes-peer"
@@ -41,6 +48,11 @@ class PeerConfig:
     max_content_bytes: int = 32 * 1024
     protocols: tuple[str, ...] = (PROTOCOL_ID, PROTOCOL_ID_V2)
     capabilities: dict = field(default_factory=dict)
+    group_cap: int = DEFAULT_GROUP_CAP
+    fanout_concurrency: int = DEFAULT_FANOUT_CONCURRENCY
+    broadcast_ttl_seconds: float = BROADCAST_TTL_SECONDS
+    request_ttl_seconds: float = 600.0
+    event_clients: int = 32
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -61,8 +73,35 @@ class PeerConfig:
             inbound=inbound,
             name=(name or "").strip(),
             allow_gateway_injection=allow_gateway,
-            extra={k: v for k, v in settings.items() if k not in ("inbound", "name", "allow_gateway_injection")},
+            group_cap=_bounded_int(settings, "group_cap", DEFAULT_GROUP_CAP, 1, HARD_GROUP_CAP),
+            fanout_concurrency=_bounded_int(settings, "fanout_concurrency", DEFAULT_FANOUT_CONCURRENCY, 1, 64),
+            broadcast_ttl_seconds=_bounded_float(settings, "broadcast_ttl_seconds", BROADCAST_TTL_SECONDS, 10.0, 3600.0),
+            request_ttl_seconds=_bounded_float(settings, "request_ttl_seconds", 600.0, 10.0, 86400.0),
+            event_clients=_bounded_int(settings, "event_clients", 32, 1, 256),
+            extra={k: v for k, v in settings.items() if k not in ("inbound", "name", "allow_gateway_injection", "group_cap", "fanout_concurrency", "broadcast_ttl_seconds", "request_ttl_seconds", "event_clients")},
         )
+
+
+def _bounded_int(settings: dict, key: str, default: int, lo: int, hi: int) -> int:
+    value = settings.get(key, default)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"hermes-peer: settings.{key} must be an integer") from exc
+    if parsed < lo or parsed > hi:
+        raise ValueError(f"hermes-peer: settings.{key} {parsed} outside {lo}..{hi}")
+    return parsed
+
+
+def _bounded_float(settings: dict, key: str, default: float, lo: float, hi: float) -> float:
+    value = settings.get(key, default)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"hermes-peer: settings.{key} must be a number") from exc
+    if parsed < lo or parsed > hi:
+        raise ValueError(f"hermes-peer: settings.{key} {parsed} outside {lo}..{hi}")
+    return parsed
 
 
 def _read_settings() -> dict:

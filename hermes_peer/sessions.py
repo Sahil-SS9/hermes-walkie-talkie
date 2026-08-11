@@ -91,6 +91,12 @@ class PeerSessionManager:
         self._policy = PolicyEngine(policy=self._config.inbound)
         self._session_policies: dict[str, Policy] = {}  # peer_id -> session-scoped policy
         self._agent_id_cache: str | None = None
+        # P6 observability: content-free metrics + bounded local events.
+        from agent_peer.events import EventBroker
+        from agent_peer.metrics import MetricsRegistry
+
+        self._metrics = MetricsRegistry()
+        self._events = EventBroker()
 
     # ------------------------------------------------------------------
     # V2 stable identity (G2.3, P3.2)
@@ -394,7 +400,9 @@ class PeerSessionManager:
         claim_row = {**base_row, "state": ReceiptState.QUEUED.value}
         existing, created = self._store.claim(claim_row)
         if not created and existing is not None:
-            return ReceiptState(existing["state"])
+            state = ReceiptState(existing["state"])
+            self._record_inbound_metrics(state, delivered=False)
+            return state
 
         engine = self._policy_engine_for(envelope.recipient_peer_id)
         engine.register_pending(envelope.recipient_peer_id, self._store.count_pending(envelope.recipient_peer_id))
@@ -403,6 +411,7 @@ class PeerSessionManager:
 
         if decision.action == "drop":
             self._store.transition(envelope.message_id, state)
+            self._record_inbound_metrics(decision.state, delivered=False)
             return decision.state
 
         if decision.action == "refuse":
@@ -415,10 +424,13 @@ class PeerSessionManager:
                     ("", envelope.message_id),
                 )
                 self._store._conn.commit()
+            self._record_inbound_metrics(ReceiptState.REFUSED, delivered=False)
             return ReceiptState.REFUSED
 
         if decision.action == "hold":
             self._store.transition(envelope.message_id, ReceiptState.HELD)
+            self._metrics.record_held(self._store.count_pending(envelope.recipient_peer_id))
+            self._record_inbound_metrics(ReceiptState.HELD, delivered=False)
             return ReceiptState.HELD
 
         # accept: forward to the harness; queued only after host acceptance.
@@ -427,8 +439,16 @@ class PeerSessionManager:
         accepted = DeliveryAdapter(self._ctx, self).deliver(envelope, force=True)
         if not accepted:
             self._store.transition(envelope.message_id, ReceiptState.HELD)
+            self._metrics.record_held(self._store.count_pending(envelope.recipient_peer_id))
+            self._record_inbound_metrics(ReceiptState.HELD, delivered=False)
             return ReceiptState.HELD
+        self._record_inbound_metrics(ReceiptState.QUEUED, delivered=True)
         return ReceiptState.QUEUED
+
+    def _record_inbound_metrics(self, state: ReceiptState, *, delivered: bool) -> None:
+        """Content-free metrics + bounded local event for one inbound (P6)."""
+        self._metrics.record_delivery(sent=delivered, reason="" if delivered else state.value)
+        self._events.publish("message", state=state.value, delivered=delivered)
 
     # ------------------------------------------------------------------
     # Outbound + inbox operations used by tools/commands (P8)
@@ -670,17 +690,66 @@ class PeerSessionManager:
         return self._request_store().expire_overdue()
 
     def doctor(self) -> dict:
-        """Diagnostics for `hermes peer doctor` (REL-1104)."""
+        """Diagnostics for `hermes peer doctor` (REL-1104, P6.3/G1.4).
+
+        Combines the v1 seam/runtime facts with the content-free health
+        snapshot (backend, peers, store, groups, requests, stale state),
+        metrics and actionable remedies.
+        """
+        from agent_peer.groups import GroupStore
+        from agent_peer.health import health_snapshot
+        from agent_peer.requests import RequestStore
+
         from .plugin import host_seam_supported
 
+        # Stale count is read-only here (never a side-effectful repair in
+        # doctor): registry heartbeat staleness, not mutation.
+        stale = len(self._registry.stale_candidates())
+        groups = GroupStore(self._store)
+        requests = RequestStore(self._store)
+        health = health_snapshot(
+            backend_kind=self._runtime._backend.kind,
+            runtime_dir=self._paths.root,
+            registry_entries=len(self._registry.list_peers()),
+            local_sessions=len(self._peers),
+            live_peers=len(self._discovery.list_live_peers()),
+            pending_messages=self._store.count_all(),
+            groups=len(groups.list_groups()),
+            active_requests=requests.count_active(),
+            stale_count=stale,
+            store_ok=True,
+            metrics=self._metrics.snapshot(),
+        )
         return {
             "seam_supported": host_seam_supported(self._ctx),
             "runtime_dir": str(self._paths.root),
-            "registry_entries": len(self._registry.list_peers()),
-            "local_sessions": len(self._peers),
+            "registry_entries": health["registry_entries"],
+            "local_sessions": health["local_sessions"],
+            "live_peers": health["live_peers"],
+            "pending_messages": health["pending_messages"],
+            "groups": health["groups"],
+            "active_requests": health["active_requests"],
+            "stale_count": health["stale_count"],
+            "backend": health["backend"],
             "policy": self._policy.policy.value,
-            "ok": host_seam_supported(self._ctx) and not self._paths.root.is_symlink(),
+            "metrics": health["metrics"],
+            "problems": health["problems"],
+            "ok": health["ok"] and host_seam_supported(self._ctx) and not self._paths.root.is_symlink(),
         }
+
+    def metrics_snapshot(self) -> dict:
+        """Content-free metrics for Desktop/status (P6.1, G1.1)."""
+        return self._metrics.snapshot()
+
+    def subscribe_events(self) -> int:
+        """Bounded event subscription for Desktop acceleration (G1.8)."""
+        return self._events.subscribe()
+
+    def unsubscribe_events(self, sid: int) -> None:
+        self._events.unsubscribe(sid)
+
+    def drain_events(self, sid: int) -> list[dict]:
+        return self._events.drain(sid)
 
     def _envelope_from_row(self, row: dict) -> Envelope:
         """Rebuild an Envelope from a stored row (for release)."""
