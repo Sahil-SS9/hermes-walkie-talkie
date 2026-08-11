@@ -4,7 +4,7 @@
     "name": "hermes-walkie-talkie",
     "kind": "python-library",
     "bootstrap": [
-      "uv sync --group dev"
+      "uv sync --locked --group dev"
     ],
     "build": [],
     "test": [

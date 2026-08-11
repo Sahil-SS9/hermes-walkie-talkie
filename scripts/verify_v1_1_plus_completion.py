@@ -127,6 +127,17 @@ def main() -> int:
     gate_tail = (gate.stdout or "").strip().splitlines()[-2:]
     check("coverage-gate", gate.returncode == 0, f"rc={gate.returncode} {gate_tail}")
 
+    # 6b. Post-gate worktree cleanliness: the suite + coverage gate must
+    # not mutate tracked files (e.g. regenerate uv.lock, rewrite assets).
+    # The pre-gate check alone cannot catch mutation introduced by the
+    # gates themselves.
+    dirty_after = git(REPO, "status", "--porcelain")
+    check("post-gate-clean", not dirty_after, f"dirty files after gates {dirty_after.splitlines() or 'none'}")
+    if dirty_after:
+        print("POST-GATE DIRTY FILES:")
+        for line in dirty_after.splitlines():
+            print(f"  {line}")
+
     # 7. Windows native evidence status.
     windows_ok = False
     windows_detail = "BLOCKED (no native Windows runner on this rig)"
