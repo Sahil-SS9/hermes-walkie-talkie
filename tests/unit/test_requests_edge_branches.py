@@ -32,6 +32,7 @@ class TestRequestStoreBranches:
             payload={},
             idempotency_key="k1",
         )
+        assert req.state == "created"
         all_rows = rs.list_for_recipient(B)
         created_rows = rs.list_for_recipient(B, states=("created",))
         done_rows = rs.list_for_recipient(B, states=("completed",))

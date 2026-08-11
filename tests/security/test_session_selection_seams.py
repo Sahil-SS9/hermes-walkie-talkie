@@ -150,7 +150,8 @@ class TestDashboardThinAdapter:
     def test_dashboard_has_no_private_state_references(self):
         import dashboard.plugin_api as api
 
-        src = open(api.__file__, encoding="utf-8").read()
+        with open(api.__file__, encoding="utf-8") as fh:
+            src = fh.read()
         # Attribute access on the manager object: mgr._peers, ._group_store()
         # ._request_store(), ._store.* (bare method names like list_peers
         # legitimately contain the substring but are public API).

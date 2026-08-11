@@ -13,6 +13,7 @@ import uuid
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 
 class _Mgr:
@@ -313,7 +314,8 @@ def test_events_websocket_unauthorized_closes(monkeypatch):
     monkeypatch.setattr(api, "_ws_upgrade_authorized", lambda ws: False)
     app.include_router(api.router, prefix="/api/plugins/hermes-peer")
     client = TestClient(app)
-    with pytest.raises(Exception):
-        with client.websocket_connect("/api/plugins/hermes-peer/events") as ws:
-            ws.send_text("ping")
-            ws.receive_json()
+    with pytest.raises(WebSocketDisconnect), client.websocket_connect(
+        "/api/plugins/hermes-peer/events"
+    ) as ws:
+        ws.send_text("ping")
+        ws.receive_json()
