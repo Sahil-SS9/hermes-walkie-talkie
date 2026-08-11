@@ -28,6 +28,8 @@ dependencies = []
 # Native Windows named-pipe backend (ADR-0005 Candidate 2): explicit
 # SID-bound DACL. Only needed on Windows; Linux/macOS remain dependency-light.
 windows = ["pywin32==310; sys_platform == 'win32'"]
+# Dashboard plugin API (FastAPI router mounted by the Hermes Desktop host).
+dashboard = ["fastapi==0.115.6"]
 
 [project.entry-points."hermes_agent.plugins"]
 hermes-peer = "hermes_peer.plugin:register"
@@ -37,7 +39,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["agent_peer", "hermes_peer", "dashboard"]
+packages = ["agent_peer", "agent_peer.backends", "hermes_peer", "dashboard"]
 
 [tool.setuptools.package-data]
 hermes_peer = ["../plugin.yaml", "assets/desktop/*.js", "assets/desktop/*.css"]

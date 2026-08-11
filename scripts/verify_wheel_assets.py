@@ -20,6 +20,10 @@ REPO = Path(__file__).resolve().parents[1]
 REQUIRED = (
     "agent_peer/__init__.py",
     "agent_peer/py.typed",
+    "agent_peer/backends/__init__.py",
+    "agent_peer/backends/base.py",
+    "agent_peer/backends/posix.py",
+    "agent_peer/backends/windows.py",
     "hermes_peer/__init__.py",
     "hermes_peer/plugin.py",
     "hermes_peer/assets/desktop/plugin.js",
@@ -30,7 +34,14 @@ REQUIRED = (
 
 
 def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--wheel", type=Path, default=None, help="explicit wheel path")
+    args = parser.parse_args()
     wheels = sorted((REPO / "dist").glob("*.whl"), key=lambda p: p.stat().st_mtime)
+    if args.wheel is not None:
+        wheels = [args.wheel]
     if not wheels:
         print("no wheel found in dist/ — run `uv build` first")
         return 1
