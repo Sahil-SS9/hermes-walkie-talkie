@@ -60,6 +60,19 @@ policy per plan P10.9/ADR-0005). Verdict: **PARTIAL — IMPLEMENTED,
 WINDOWS RELEASE EVIDENCE BLOCKED** (exit 2). Full suite 720 passed /
 25 skipped (3 native-Windows + 2 chown env); coverage gate PASS 92.7%.
 
+## P11.3 adversarial probe evidence
+
+Against final SHA `b00e5e7`: 38 passed / 14 skipped across
+`test_broadcast_idempotency` (property: concurrent fan-out converges on
+exactly one child per recipient), `test_workflow_transitions` (every
+legal/illegal transition), `test_request_workflow` (full
+queued→accepted→progress→completed timeline), `test_busy_target_queue_only`
+(HELD/queue-only delivery), `test_windows_owner_boundary` +
+`test_windows_backend` (SID/DACL contract; native-gated), 
+`test_desktop_plugin_install`, `test_dashboard_api` (503/404/WS).
+All 14 skips carry the explicit `NATIVE WINDOWS GATE` reason — no silent
+disablement.
+
 ## Remaining (post-goal, external)
 
 - P11.10/P11.11: fresh independent read-only adversarial review against
