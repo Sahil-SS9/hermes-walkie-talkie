@@ -1,6 +1,11 @@
-"""Hermes agent tools: peer_list_agents, peer_send_message, peer_read_inbox (HP-801..HP-803).
+"""Hermes agent tools: peer_list_agents, peer_send_message, peer_read_inbox
+plus the V1.1 request and group tools.
 
-Exactly three tools in v1, with stable JSON schemas and useful errors.
+The V1 surface is peer_list_agents / peer_send_message / peer_read_inbox
+(HP-801..HP-803). V1.1 adds the request tools (peer_request_create,
+peer_request_status, peer_request_respond, peer_request_cancel) and the
+group tools (peer_group_list, peer_group_manage, peer_broadcast) — ten
+tools total, each with a stable JSON schema and useful errors.
 Handlers are pure functions of ``(args)`` that resolve the process-global
 manager; the manager is registered by ``hermes_peer.plugin.register``.
 """

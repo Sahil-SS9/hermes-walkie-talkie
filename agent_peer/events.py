@@ -1,9 +1,10 @@
 """Bounded local event broker (P6.4, G1.8).
 
 Local peer/presence/message/group/request transitions, pushed to bounded
-clients. Slow consumers are dropped safely — event load must never block or
-fail message delivery (P6 gate). No persistence; the store is the durable
-record.
+clients. Subscribers are retained; each client keeps a bounded buffer and
+the OLDEST buffered events are dropped when a slow consumer falls behind —
+event load must never block or fail message delivery (P6 gate). No
+persistence; the store is the durable record.
 """
 
 from __future__ import annotations
