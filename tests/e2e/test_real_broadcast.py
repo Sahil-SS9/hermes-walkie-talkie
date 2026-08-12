@@ -114,6 +114,10 @@ def _extract_result(stdout: str) -> dict:
 
 
 class TestRealBroadcastE2E:
+    @pytest.fixture(autouse=True)
+    def _skip_without_core(self, require_hermes_core):
+        pass
+
     def test_real_two_hermes_broadcast(self, tmp_path):
         """A creates a group, adds B, broadcasts; B's host receives it."""
         home_a = _make_home(tmp_path, "home-a")

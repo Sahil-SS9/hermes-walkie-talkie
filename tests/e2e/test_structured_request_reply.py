@@ -119,6 +119,10 @@ def _extract_result(stdout: str) -> dict:
 
 
 class TestStructuredRequestE2E:
+    @pytest.fixture(autouse=True)
+    def _skip_without_core(self, require_hermes_core):
+        pass
+
     def test_real_two_hermes_request_workflow(self, tmp_path):
         """Agent A creates a request to agent B; B's host receives it as inert
         conversational input; the workflow completes through the tools."""

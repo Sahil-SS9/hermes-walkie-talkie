@@ -403,6 +403,17 @@ class TestVerifierContract:
         # Rewrite history so the base is not an ancestor of HEAD.
         _git(disposable.repo, "checkout", "--orphan", "orphan")
         _git(disposable.repo, "rm", "-rf", ".")
+        # run_verifier executes the script from the working tree, so restore
+        # the tracked helpers after removing everything else.
+        (disposable.repo / "scripts").mkdir(parents=True)
+        _write(
+            disposable.repo / "scripts" / "verify_remediation_completion.py",
+            VERIFIER.read_text(encoding="utf-8"),
+        )
+        _write(
+            disposable.repo / "scripts" / "remediation_manifest.json",
+            MANIFEST.read_text(encoding="utf-8"),
+        )
         _write(disposable.repo / "fresh.txt", "fresh\n")
         _git(disposable.repo, "add", "-A")
         _git(disposable.repo, "commit", "-m", "orphan")

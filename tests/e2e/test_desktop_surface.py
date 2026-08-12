@@ -115,6 +115,10 @@ if hold_until:
 
 
 class TestDesktopSurfaceE2E:
+    @pytest.fixture(autouse=True)
+    def _skip_without_core(self, require_hermes_core):
+        pass
+
     def test_real_desktop_surface_peer_observed(self, tmp_path):
         """A real process opens a desktop-surface session; a second real
         process sees that peer and its surface=desktop."""

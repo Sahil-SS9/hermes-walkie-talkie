@@ -132,6 +132,10 @@ if hold_until:
 
 
 class TestRealHermesProcesses:
+    @pytest.fixture(autouse=True)
+    def _skip_without_core(self, require_hermes_core):
+        pass
+
     def test_provenance_imports_core_worktree(self):
         """REM-501 provenance: the launched processes must import hermes_cli
         from HERMES_CORE_ROOT, never the system install."""
