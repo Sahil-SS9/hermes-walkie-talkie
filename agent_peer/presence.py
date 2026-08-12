@@ -23,7 +23,7 @@ class PresenceManager:
         self._registry = registry
         self._peer_id = peer_id
         self._interval = interval
-        self._last_write = 0.0
+        self._last_write = float("-inf")  # first heartbeat is always due
         self._status = Presence.IDLE
 
     def heartbeat(self, force: bool = False) -> bool:

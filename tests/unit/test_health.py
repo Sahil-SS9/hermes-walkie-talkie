@@ -21,16 +21,16 @@ def _snap(**overrides):
     return health_snapshot(**base)
 
 
-def test_healthy_snapshot():
-    snap = _snap()
+def test_healthy_snapshot(tmp_path):
+    snap = _snap(runtime_dir=str(tmp_path))
     assert snap["ok"] is True
     assert snap["backend"] == "posix"
     assert snap["problems"] == []
     assert snap["stale_threshold_seconds"] > 0
 
 
-def test_stale_peers_problem_with_remedy():
-    snap = _snap(stale_count=3)
+def test_stale_peers_problem_with_remedy(tmp_path):
+    snap = _snap(runtime_dir=str(tmp_path), stale_count=3)
     assert snap["ok"] is True  # warning, not error
     problems = {p["key"]: p for p in snap["problems"]}
     assert "stale_peers" in problems
