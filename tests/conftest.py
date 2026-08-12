@@ -15,14 +15,14 @@ def tmp_path() -> Iterator[Path]:
     """Short-path tmp dir for AF_UNIX socket tests.
 
     pytest's default tmp_path nests under the runner's deep temp dir
-    (e.g. /home/runner/work/<repo>/<repo>/pytest-of-runner/...), which
-    exceeds the ~108-byte AF_UNIX sun_path limit on CI runners.
-    A short /tmp prefix keeps socket paths well under the limit while
-    preserving per-test isolation.
+    (e.g. /home/runner/work/.../pytest-of-runner/pytest-0/test_x0/),
+    which exceeds the ~108-byte AF_UNIX sun_path limit on CI runners.
+    Force a SHORT base dir: on Linux and macOS, /tmp is short
+    (macOS TMPDIR points at the long /var/folders/... path). resolve()
+    keeps identity tests consistent with os.getcwd()/realpath on
+    platforms where /tmp or /var/folders is a symlink.
     """
-    with tempfile.TemporaryDirectory(prefix="aps-") as d:
-        # resolve() so macOS /var/folders -> /private/var symlink does not
-        # diverge from os.getcwd()/realpath inside host_metadata().
+    with tempfile.TemporaryDirectory(prefix="aps-", dir="/tmp") as d:
         yield Path(d).resolve()
 
 
