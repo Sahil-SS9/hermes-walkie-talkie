@@ -6,7 +6,7 @@
  * through ctx.rest and then refresh.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { PluginContext } from '@hermes/plugin-sdk'
 
 import type { PeerApi } from '../api'
@@ -23,21 +23,12 @@ export interface PeerPanelProps {
 export function PeerPanel(props: PeerPanelProps) {
   const { ctx, api, state, refresh } = props
   const [tab, setTab] = useState<'peers' | 'groups' | 'inbox' | 'requests' | 'health'>('peers')
-  const [profile, setProfile] = useState('default')
 
   useEffect(() => {
     void refresh()
     const off = api.onEvents(() => void refresh())
     return off
-  }, [api, refresh, profile])
-
-  const changeProfile = useCallback(
-    (next: string) => {
-      setProfile(next)
-      props.switchProfile(next)
-    },
-    [props]
-  )
+  }, [api, refresh])
 
   const tabs = [
     ['peers', 'Peers'],
@@ -64,9 +55,9 @@ export function PeerPanel(props: PeerPanelProps) {
         {state.loading ? <p className="hermes-peer-muted">Loading…</p> : null}
         {state.error ? <p className="hermes-peer-error">{state.error}</p> : null}
         {tab === 'peers' ? <PeersSection peers={state.peers} /> : null}
-        {tab === 'groups' ? <GroupsSection ctx={ctx} api={api} refresh={refresh} /> : null}
+        {tab === 'groups' ? <GroupsSection api={api} refresh={refresh} /> : null}
         {tab === 'inbox' ? <InboxSection api={api} /> : null}
-        {tab === 'requests' ? <RequestsSection api={api} requests={state.requests} refresh={refresh} /> : null}
+        {tab === 'requests' ? <RequestsSection requests={state.requests} /> : null}
         {tab === 'health' ? <HealthSection ctx={ctx} /> : null}
       </div>
     </div>
@@ -89,7 +80,7 @@ function PeersSection({ peers }: { peers: Array<{ name: string; agent_id: string
   )
 }
 
-function GroupsSection({ ctx, api, refresh }: { ctx: PluginContext; api: PeerApi; refresh: () => Promise<void> }) {
+function GroupsSection({ api, refresh }: { api: PeerApi; refresh: () => Promise<void> }) {
   const [groups, setGroups] = useState<Array<{ group_id: string; name: string; members: number }>>([])
   const [name, setName] = useState('')
 
@@ -146,13 +137,9 @@ function InboxSection({ api }: { api: PeerApi }) {
 }
 
 function RequestsSection({
-  api,
   requests,
-  refresh,
 }: {
-  api: PeerApi
   requests: Array<{ request_id: string; state: string; summary: string }>
-  refresh: () => Promise<void>
 }) {
   if (!requests.length) return <p className="hermes-peer-muted">No requests.</p>
   return (

@@ -1,4 +1,6 @@
 import js from '@eslint/js'
+import tseslint from '@typescript-eslint/eslint-plugin'
+import tsParser from '@typescript-eslint/parser'
 
 export default [
   {
@@ -8,22 +10,23 @@ export default [
   {
     files: ['src/**/*.ts', 'src/**/*.tsx'],
     languageOptions: {
-      ecmaVersion: 2022,
-      sourceType: 'module',
-      globals: {
-        console: 'readonly',
-        process: 'readonly',
-        document: 'readonly',
-        window: 'readonly',
-        navigator: 'readonly',
-        URL: 'readonly',
-        setTimeout: 'readonly',
-        clearTimeout: 'readonly',
-        globalThis: 'readonly',
+      parser: tsParser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        sourceType: 'module',
+        ecmaFeatures: { jsx: true },
       },
     },
+    plugins: {
+      '@typescript-eslint': tseslint,
+    },
     rules: {
-      'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+      ...tseslint.configs.recommended.rules,
+      // Runtime-control plane code must not leave unused imports behind.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
     },
   },
 ]
