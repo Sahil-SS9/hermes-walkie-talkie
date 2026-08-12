@@ -3,9 +3,24 @@
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture
+def tmp_path() -> Iterator[Path]:
+    """Short-path tmp dir for AF_UNIX socket tests.
+
+    pytest's default tmp_path nests under the runner's deep temp dir
+    (e.g. /home/runner/work/<repo>/<repo>/pytest-of-runner/pytest-0/test_x0/),
+    which exceeds the ~108-byte AF_UNIX sun_path limit on CI runners —
+    "OSError: AF_UNIX path too long". A short /tmp prefix keeps socket
+    paths well under the limit while preserving per-test isolation.
+    """
+    with tempfile.TemporaryDirectory(prefix="aps-") as d:
+        yield Path(d)
 
 
 @pytest.fixture
