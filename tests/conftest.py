@@ -20,9 +20,12 @@ def tmp_path() -> Iterator[Path]:
     Force a SHORT base dir: on Linux and macOS, /tmp is short
     (macOS TMPDIR points at the long /var/folders/... path). resolve()
     keeps identity tests consistent with os.getcwd()/realpath on
-    platforms where /tmp or /var/folders is a symlink.
+    platforms where /tmp or /var/folders is a symlink. Windows has no
+    /tmp and named pipes are not filesystem paths, so it uses the
+    default temp dir (no length limit applies).
     """
-    with tempfile.TemporaryDirectory(prefix="aps-", dir="/tmp") as d:
+    base = "/tmp" if os.name == "posix" else tempfile.gettempdir()
+    with tempfile.TemporaryDirectory(prefix="aps-", dir=base) as d:
         yield Path(d).resolve()
 
 
@@ -33,7 +36,8 @@ def isolated_runtime(monkeypatch):
     Every test gets its own runtime root so tests never see real peers or
     each other's state.
     """
-    with tempfile.TemporaryDirectory(prefix="agent-peer-test-", dir="/tmp") as tmp:
+    base = "/tmp" if os.name == "posix" else tempfile.gettempdir()
+    with tempfile.TemporaryDirectory(prefix="agent-peer-test-", dir=base) as tmp:
         runtime = Path(tmp) / "runtime"
         state = Path(tmp) / "state"
         runtime.mkdir(mode=0o700)
