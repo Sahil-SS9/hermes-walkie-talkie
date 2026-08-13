@@ -26,7 +26,7 @@ def test_two_real_processes_exchange(tmp_path):
     import uuid
     from pathlib import Path
 
-    from agent_peer.models import Kind, PeerIdentity, ReceiptState, make_envelope
+    from agent_peer.models import ReceiptState
 
     env_a = tmp_path / "home-a"
     env_b = tmp_path / "home-b"
@@ -36,7 +36,7 @@ def test_two_real_processes_exchange(tmp_path):
     worker = r"""
 import json, os, sys, uuid, traceback
 from datetime import UTC, datetime
-from agent_peer.models import PeerRecord, Presence
+from agent_peer.models import Kind, PeerIdentity, PeerRecord, Presence, make_envelope
 from agent_peer.runtime import PeerRuntimeManager
 
 try:
@@ -51,6 +51,20 @@ try:
     )
     handle = runtime.register_peer(rec, on_message=lambda env: "queued")
     print(json.dumps({"role": role, "peer_id": rec.peer_id, "ok": True}), flush=True)
+
+    # Only alpha sends. This is deliberately performed by alpha's own
+    # manager: send() authenticates the sender against local registrations.
+    command = sys.stdin.readline()
+    if command:
+        request = json.loads(command)
+        if request["action"] == "send":
+            receipt = runtime.send(make_envelope(
+                sender=PeerIdentity(peer_id=rec.peer_id, name=rec.name, profile=rec.profile),
+                recipient_peer_id=request["recipient_peer_id"],
+                kind=Kind.MESSAGE,
+                content=request["content"],
+            ))
+            print(json.dumps({"receipt": receipt.state.value, "detail": receipt.detail}), flush=True)
     sys.stdin.read()
     handle.close()
     runtime.shutdown()
@@ -165,20 +179,46 @@ except Exception:
     assert ready_a, f"child A exited before ready; stderr: {a.stderr.read() if a.stderr else ''}"
     assert json.loads(ready_a)["ok"], f"child A not ok: {a.stderr.read() if a.stderr else ''}"
 
-    from agent_peer.runtime import PeerRuntimeManager
+    # Route the send through alpha's own manager. ``send()`` rejects a
+    # sender not registered in that manager, so an unrelated controller
+    # cannot impersonate alpha (SEC-R1).
+    assert a.stdin is not None
+    a.stdin.write(json.dumps({
+        "action": "send",
+        "recipient_peer_id": b_peer,
+        "content": "cross-process",
+    }) + "\n")
+    a.stdin.flush()
 
-    controller = PeerRuntimeManager(tmp_path)
-    try:
-        env = make_envelope(
-            sender=PeerIdentity(peer_id=a_peer, name="alpha", profile="default"),
-            recipient_peer_id=b_peer,
-            kind=Kind.MESSAGE,
-            content="cross-process",
+    _receipt_line: list[str] = []
+    _receipt_exc: list[Exception] = []
+
+    def _drain_receipt():
+        try:
+            line = a.stdout.readline()
+            if line:
+                _receipt_line.append(line)
+        except Exception as exc:
+            _receipt_exc.append(exc)
+
+    _receipt_reader = threading.Thread(target=_drain_receipt, daemon=True)
+    _receipt_reader.start()
+    _receipt_reader.join(timeout=30.0)
+    if _receipt_exc:
+        raise _receipt_exc[0]
+    if not _receipt_line:
+        a.kill()
+        a.wait(timeout=5)
+        raise AssertionError(
+            "alpha did not return a delivery receipt within 30s.\n"
+            f"stderr: {''.join(_a_stderr_chunks)}"
         )
-        receipt = controller.send(env)
-        assert receipt.state in (ReceiptState.QUEUED, ReceiptState.UNREACHABLE)
+    receipt = json.loads(_receipt_line[0])
+    assert receipt["receipt"] in (ReceiptState.QUEUED.value, ReceiptState.UNREACHABLE.value)
+
+    try:
+        pass
     finally:
-        controller.shutdown()
         assert a.stdin is not None and b.stdin is not None
         a.stdin.close()
         b.stdin.close()
