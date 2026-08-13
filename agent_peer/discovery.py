@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import secrets
 import stat
 import uuid as uuidlib
@@ -42,7 +41,7 @@ from .codec import decode_envelope, encode_envelope
 from .constants import PROTOCOL_ID
 from .errors import AgentPeerError
 from .models import Envelope, Kind, PeerIdentity, PeerRecord
-from .paths import RuntimePaths, select_runtime_dir, same_owner
+from .paths import RuntimePaths, same_owner, select_runtime_dir
 from .registry import Registry
 
 logger = logging.getLogger("agent_peer.discovery")
