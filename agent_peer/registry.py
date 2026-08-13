@@ -215,7 +215,9 @@ class Registry:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
                 return None
-            if not same_owner(st) or stat.S_IMODE(st.st_mode) & 0o077:
+            if not same_owner(st) or (
+                os.name == "posix" and stat.S_IMODE(st.st_mode) & 0o077
+            ):
                 logger.warning("registry: refusing non-owner-only record %s", path)
                 return None
             raw = os.read(fd, 65_537)
