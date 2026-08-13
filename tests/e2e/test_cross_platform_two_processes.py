@@ -67,8 +67,35 @@ runtime.shutdown()
         cwd=str(Path(__file__).resolve().parents[2]),
     )
     assert b.stdout is not None
-    # Wait for B's ready line.
-    ready_b = b.stdout.readline()
+    # Wait for B's ready line with a bounded timeout (cross-platform).
+    # Threading works reliably on all platforms (select.select does NOT
+    # work on Windows for non-socket file handles).
+    import threading
+
+    _ready_b_line: list[str] = []
+    _ready_b_exc: list[Exception] = []
+
+    def _drain_b_ready():
+        try:
+            line = b.stdout.readline()
+            if line:
+                _ready_b_line.append(line)
+        except Exception as exc:
+            _ready_b_exc.append(exc)
+
+    _b_reader = threading.Thread(target=_drain_b_ready, daemon=True)
+    _b_reader.start()
+    _b_reader.join(timeout=60.0)
+    if _ready_b_exc:
+        raise _ready_b_exc[0]
+    if not _ready_b_line:
+        b.kill()
+        b.wait(timeout=5)
+        raise AssertionError(
+            f"child B did not print ready line within 60s.\n"
+            f"stderr: {b.stderr.read() if b.stderr else ''}"
+        )
+    ready_b = _ready_b_line[0]
     assert ready_b, f"child B exited before ready; stderr: {b.stderr.read() if b.stderr else ''}"
     assert json.loads(ready_b)["ok"], f"child B not ok: {b.stderr.read() if b.stderr else ''}"
 
@@ -83,7 +110,31 @@ runtime.shutdown()
         cwd=str(Path(__file__).resolve().parents[2]),
     )
     assert a.stdout is not None
-    ready_a = a.stdout.readline()
+    # Wait for A's ready line with a bounded timeout (cross-platform).
+    _ready_a_line: list[str] = []
+    _ready_a_exc: list[Exception] = []
+
+    def _drain_a_ready():
+        try:
+            line = a.stdout.readline()
+            if line:
+                _ready_a_line.append(line)
+        except Exception as exc:
+            _ready_a_exc.append(exc)
+
+    _a_reader = threading.Thread(target=_drain_a_ready, daemon=True)
+    _a_reader.start()
+    _a_reader.join(timeout=60.0)
+    if _ready_a_exc:
+        raise _ready_a_exc[0]
+    if not _ready_a_line:
+        a.kill()
+        a.wait(timeout=5)
+        raise AssertionError(
+            f"child A did not print ready line within 60s.\n"
+            f"stderr: {a.stderr.read() if a.stderr else ''}"
+        )
+    ready_a = _ready_a_line[0]
     assert ready_a, f"child A exited before ready; stderr: {a.stderr.read() if a.stderr else ''}"
     assert json.loads(ready_a)["ok"], f"child A not ok: {a.stderr.read() if a.stderr else ''}"
 
