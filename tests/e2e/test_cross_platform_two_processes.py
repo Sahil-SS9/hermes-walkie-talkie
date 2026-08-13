@@ -39,26 +39,18 @@ from datetime import UTC, datetime
 from agent_peer.models import PeerRecord, Presence
 from agent_peer.runtime import PeerRuntimeManager
 
-def _trace(msg):
-    print(msg, file=sys.stderr, flush=True)
-
 try:
     role = sys.argv[1]
     root = sys.argv[2]
-    _trace(f"[{role}] starting PeerRuntimeManager(root={root})")
     runtime = PeerRuntimeManager(root)
-    _trace(f"[{role}] runtime created, backend={runtime._backend.__class__.__name__}")
     rec = PeerRecord(
         peer_id=sys.argv[3], instance_id=str(uuid.uuid4()),
         session_id=f"session-{role}", name=role, profile="default",
         surface="cli", started_at=datetime.now(UTC).isoformat(),
         last_seen=datetime.now(UTC).isoformat(), status=Presence.IDLE.value,
     )
-    _trace(f"[{role}] calling register_peer(peer_id={rec.peer_id[:8]})")
     handle = runtime.register_peer(rec, on_message=lambda env: "queued")
-    _trace(f"[{role}] register_peer returned, socket_path={rec.socket_path}")
     print(json.dumps({"role": role, "peer_id": rec.peer_id, "ok": True}), flush=True)
-    # hold open until stdin closes
     sys.stdin.read()
     handle.close()
     runtime.shutdown()
@@ -81,10 +73,20 @@ except Exception:
     # Wait for B's ready line with a bounded timeout (cross-platform).
     # Threading works reliably on all platforms (select.select does NOT
     # work on Windows for non-socket file handles).
+    # IMPORTANT: drain stderr concurrently to prevent pipe buffer deadlock
+    # on Windows (4KB pipe buffer fills, subprocess blocks on write).
     import threading
 
     _ready_b_line: list[str] = []
     _ready_b_exc: list[Exception] = []
+    _b_stderr_chunks: list[str] = []
+
+    def _drain_b_stderr():
+        try:
+            for chunk in iter(lambda: b.stderr.readline(), ""):
+                _b_stderr_chunks.append(chunk)
+        except Exception:
+            pass
 
     def _drain_b_ready():
         try:
@@ -94,6 +96,8 @@ except Exception:
         except Exception as exc:
             _ready_b_exc.append(exc)
 
+    _b_stderr_thread = threading.Thread(target=_drain_b_stderr, daemon=True)
+    _b_stderr_thread.start()
     _b_reader = threading.Thread(target=_drain_b_ready, daemon=True)
     _b_reader.start()
     _b_reader.join(timeout=60.0)
@@ -102,9 +106,10 @@ except Exception:
     if not _ready_b_line:
         b.kill()
         b.wait(timeout=5)
+        b_stderr = "".join(_b_stderr_chunks)
         raise AssertionError(
             f"child B did not print ready line within 60s.\n"
-            f"stderr: {b.stderr.read() if b.stderr else ''}"
+            f"stderr: {b_stderr}"
         )
     ready_b = _ready_b_line[0]
     assert ready_b, f"child B exited before ready; stderr: {b.stderr.read() if b.stderr else ''}"
@@ -124,6 +129,14 @@ except Exception:
     # Wait for A's ready line with a bounded timeout (cross-platform).
     _ready_a_line: list[str] = []
     _ready_a_exc: list[Exception] = []
+    _a_stderr_chunks: list[str] = []
+
+    def _drain_a_stderr():
+        try:
+            for chunk in iter(lambda: a.stderr.readline(), ""):
+                _a_stderr_chunks.append(chunk)
+        except Exception:
+            pass
 
     def _drain_a_ready():
         try:
@@ -133,6 +146,8 @@ except Exception:
         except Exception as exc:
             _ready_a_exc.append(exc)
 
+    _a_stderr_thread = threading.Thread(target=_drain_a_stderr, daemon=True)
+    _a_stderr_thread.start()
     _a_reader = threading.Thread(target=_drain_a_ready, daemon=True)
     _a_reader.start()
     _a_reader.join(timeout=60.0)
@@ -141,9 +156,10 @@ except Exception:
     if not _ready_a_line:
         a.kill()
         a.wait(timeout=5)
+        a_stderr = "".join(_a_stderr_chunks)
         raise AssertionError(
             f"child A did not print ready line within 60s.\n"
-            f"stderr: {a.stderr.read() if a.stderr else ''}"
+            f"stderr: {a_stderr}"
         )
     ready_a = _ready_a_line[0]
     assert ready_a, f"child A exited before ready; stderr: {a.stderr.read() if a.stderr else ''}"

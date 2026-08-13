@@ -44,26 +44,18 @@ from datetime import UTC, datetime
 from agent_peer.models import PeerRecord, Presence
 from agent_peer.runtime import PeerRuntimeManager
 
-def _trace(msg):
-    print(msg, file=sys.stderr, flush=True)
-
 try:
     role = sys.argv[1]
     root = sys.argv[2]
-    _trace(f"[{role}] starting PeerRuntimeManager(root={root})")
     runtime = PeerRuntimeManager(root)
-    _trace(f"[{role}] runtime created, backend={runtime._backend.__class__.__name__}")
     rec = PeerRecord(
         peer_id=sys.argv[3], instance_id=str(uuid.uuid4()),
         session_id=f"session-{role}", name=role, profile="default",
         surface="cli", started_at=datetime.now(UTC).isoformat(),
         last_seen=datetime.now(UTC).isoformat(), status=Presence.IDLE.value,
     )
-    _trace(f"[{role}] calling register_peer(peer_id={rec.peer_id[:8]})")
     handle = runtime.register_peer(rec, on_message=lambda env: "queued")
-    _trace(f"[{role}] register_peer returned, socket_path={rec.socket_path}")
     print(json.dumps({"role": role, "peer_id": rec.peer_id, "ok": True}), flush=True)
-    # hold open until stdin closes
     sys.stdin.read()
     handle.close()
     runtime.shutdown()
@@ -84,10 +76,20 @@ except Exception:
         # Bounded read: fail fast with diagnostics instead of hanging forever.
         # Threading works reliably on all platforms (select.select does NOT
         # work on Windows for non-socket file handles).
+        # IMPORTANT: drain stderr concurrently to prevent pipe buffer deadlock
+        # on Windows (4KB pipe buffer fills, subprocess blocks on write).
         import threading
 
         _ready_line: list[str] = []
         _read_exc: list[Exception] = []
+        _stderr_chunks: list[str] = []
+
+        def _drain_stderr():
+            try:
+                for chunk in iter(lambda: proc_b.stderr.readline(), ""):
+                    _stderr_chunks.append(chunk)
+            except Exception:
+                pass
 
         def _drain_ready():
             try:
@@ -97,6 +99,8 @@ except Exception:
             except Exception as exc:
                 _read_exc.append(exc)
 
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
         reader = threading.Thread(target=_drain_ready, daemon=True)
         reader.start()
         reader.join(timeout=60.0)
@@ -106,7 +110,7 @@ except Exception:
             # Timeout — kill B and surface its stderr for diagnostics.
             proc_b.kill()
             proc_b.wait(timeout=5)
-            b_stderr = proc_b.stderr.read()
+            b_stderr = "".join(_stderr_chunks)
             raise AssertionError(
                 f"Process B did not print its ready line within 60s.\n"
                 f"stderr:\n{b_stderr}"

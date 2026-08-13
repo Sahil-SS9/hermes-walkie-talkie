@@ -300,27 +300,12 @@ class Registry:
 
     def _atomic_write(self, path: Path, data: dict) -> None:
         tmp = path.with_suffix(".tmp")
-        import sys as _sys
-        if os.name != "posix":
-            print(f"[registry] atomic_write: os.open({tmp})", file=_sys.stderr, flush=True)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             os.fchmod(fd, 0o600)
-            if os.name != "posix":
-                print("[registry] atomic_write: os.write", file=_sys.stderr, flush=True)
             os.write(fd, json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-            # fsync is best-effort on Windows — FlushFileBuffers can block
-            # indefinitely when antivirus (e.g. Windows Defender on CI
-            # runners) holds a scan lock on the temp file. The atomic
-            # os.replace still guarantees consistency without it.
             if os.name == "posix":
                 os.fsync(fd)
-            if os.name != "posix":
-                print("[registry] atomic_write: os.close", file=_sys.stderr, flush=True)
         finally:
             os.close(fd)
-        if os.name != "posix":
-            print(f"[registry] atomic_write: os.replace({tmp}, {path})", file=_sys.stderr, flush=True)
         os.replace(tmp, path)
-        if os.name != "posix":
-            print("[registry] atomic_write: done", file=_sys.stderr, flush=True)

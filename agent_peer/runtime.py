@@ -157,25 +157,13 @@ class PeerRuntimeManager:
         """
         with self._lock:
             socket_path = self._paths.socket_path_for(record.peer_id, record.instance_id)
-            if self._is_windows:
-                import sys as _sys
-                print(f"[runtime] socket_path={socket_path}", file=_sys.stderr, flush=True)
             self._reclaim_stale_socket(socket_path)
-            if self._is_windows:
-                import sys as _sys
-                print("[runtime] reclaim done", file=_sys.stderr, flush=True)
             listener = None
             try:
-                if self._is_windows:
-                    import sys as _sys
-                    print("[runtime] calling bind_listener", file=_sys.stderr, flush=True)
                 listener = self._backend.bind_listener(
                     socket_path,
                     instance_id=record.instance_id,
                 )
-                if self._is_windows:
-                    import sys as _sys
-                    print("[runtime] bind_listener returned", file=_sys.stderr, flush=True)
                 # Capture the bound socket's UID and inode (REM-105/106).
                 # POSIX: AF_UNIX socket files expose st_uid/st_ino and the
                 # discovery fence compares them. Windows: named pipes have
@@ -202,10 +190,7 @@ class PeerRuntimeManager:
                 )
                 if self._is_windows:
                     # Named pipes: bounded per-listener wait thread (P2).
-                    import sys as _sys
-                    print("[runtime] starting windows listener", file=_sys.stderr, flush=True)
                     self._start_windows_listener(record.peer_id, listener)
-                    print("[runtime] windows listener started", file=_sys.stderr, flush=True)
                     self._thread = None  # selector thread unused on Windows
                 else:
                     self._selector.register(listener, selectors.EVENT_READ, "listen")
@@ -219,13 +204,7 @@ class PeerRuntimeManager:
                         raise RuntimeError("peer supervisor failed to start")
                 # Publication is the final registration step: the listener and
                 # confirmed supervisor are already ready to answer probes.
-                if self._is_windows:
-                    import sys as _sys
-                    print("[runtime] registering in registry", file=_sys.stderr, flush=True)
                 self._registry.register(record)
-                if self._is_windows:
-                    import sys as _sys
-                    print("[runtime] registry done, returning handle", file=_sys.stderr, flush=True)
                 handle = PeerHandle(
                     peer_id=record.peer_id,
                     socket_path=socket_path,
