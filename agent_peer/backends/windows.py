@@ -146,9 +146,13 @@ class WindowsTransportBackend:
         user_sid = self._current_user_sid(ns)
         sddl = f"D:P(A;;GA;;;{user_sid})"
         try:
-            security = ns["win32security"].ConvertStringSecurityDescriptorToSecurityDescriptor(
+            descriptor = ns["win32security"].ConvertStringSecurityDescriptorToSecurityDescriptor(
                 sddl, ns["win32security"].SDDL_REVISION_1
             )
+            # CreateNamedPipe's last parameter is a PySECURITY_ATTRIBUTES,
+            # not a raw PySECURITY_DESCRIPTOR; wrap it the pywin32 way.
+            sa = ns["win32security"].SECURITY_ATTRIBUTES()
+            sa.SECURITY_DESCRIPTOR = descriptor
             handle = ns["win32pipe"].CreateNamedPipe(
                 pipe_name,
                 ns["win32pipe"].PIPE_ACCESS_DUPLEX,
@@ -159,7 +163,7 @@ class WindowsTransportBackend:
                 65536,  # out buffer
                 65536,  # in buffer
                 0,  # default timeout
-                security,
+                sa,
             )
         except Exception as exc:  # pragma: no cover - native only
             raise NotImplementedError(
