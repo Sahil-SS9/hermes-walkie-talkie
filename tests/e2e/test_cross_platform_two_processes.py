@@ -69,7 +69,8 @@ runtime.shutdown()
     assert b.stdout is not None
     # Wait for B's ready line.
     ready_b = b.stdout.readline()
-    assert json.loads(ready_b)["ok"]
+    assert ready_b, f"child B exited before ready; stderr: {b.stderr.read() if b.stderr else ''}"
+    assert json.loads(ready_b)["ok"], f"child B not ok: {b.stderr.read() if b.stderr else ''}"
 
     # Start A (sender) and send to B through A's manager.
     a_peer = str(uuid.uuid4())
@@ -83,7 +84,8 @@ runtime.shutdown()
     )
     assert a.stdout is not None
     ready_a = a.stdout.readline()
-    assert json.loads(ready_a)["ok"]
+    assert ready_a, f"child A exited before ready; stderr: {a.stderr.read() if a.stderr else ''}"
+    assert json.loads(ready_a)["ok"], f"child A not ok: {a.stderr.read() if a.stderr else ''}"
 
     from agent_peer.runtime import PeerRuntimeManager
 
