@@ -304,7 +304,12 @@ class Registry:
         try:
             os.fchmod(fd, 0o600)
             os.write(fd, json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-            os.fsync(fd)
+            # fsync is best-effort on Windows — FlushFileBuffers can block
+            # indefinitely when antivirus (e.g. Windows Defender on CI
+            # runners) holds a scan lock on the temp file. The atomic
+            # os.replace still guarantees consistency without it.
+            if os.name == "posix":
+                os.fsync(fd)
         finally:
             os.close(fd)
         os.replace(tmp, path)
