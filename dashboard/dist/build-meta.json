@@ -47,7 +47,7 @@
       "format": "esm"
     },
     "src/app.ts": {
-      "bytes": 23078,
+      "bytes": 24494,
       "imports": [
         {
           "path": "src/api.ts",
@@ -120,7 +120,7 @@
     }
   },
   "bytes": {
-    "js": 23749,
+    "js": 23951,
     "css": 11600
   }
 }

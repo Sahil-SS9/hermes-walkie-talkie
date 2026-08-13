@@ -69,6 +69,23 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
     selectedPeer: null,
   };
 
+  // Shared inspector state — single timer so inspector mouseenter
+  // can cancel the hide scheduled by peer mouseleave (fixes the
+  // safe-corridor bug where per-item closure timers couldn't be cleared)
+  let inspectorHideTimer: ReturnType<typeof setTimeout> | null = null;
+  let activePeer: PeerView | null = null;
+  let activePeerEl: HTMLElement | null = null;
+  let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleInspectorHide(): void {
+    if (inspectorHideTimer) clearTimeout(inspectorHideTimer);
+    inspectorHideTimer = setTimeout(() => {
+      const insp = document.getElementById('wt-inspector');
+      if (insp) insp.classList.remove('show');
+      inspectorHideTimer = null;
+    }, 300);
+  }
+
   // Build DOM shell
   const root = rootEl || document.getElementById('root') || document.body;
   root.innerHTML = '';
@@ -121,23 +138,83 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
   shell.appendChild(stt);
 
   // ---------------------------------------------------------------------------
-  // Inspector listeners — attached ONCE, not per buildPeerItem
+  // Inspector listeners — attached ONCE, not per buildPeerItem.
+  // Uses the shared inspectorHideTimer so inspector mouseenter can cancel
+  // the hide scheduled by peer mouseleave (fixes the safe-corridor bug).
   // ---------------------------------------------------------------------------
 
   const inspector = document.getElementById('wt-inspector');
   if (inspector) {
-    // Keep inspector open when hovering it
+    // Cancel any pending hide when the user moves into the inspector
     inspector.addEventListener('mouseenter', () => {
-      // The hideTimer is managed by buildPeerItem; this just prevents hide
+      if (inspectorHideTimer) {
+        clearTimeout(inspectorHideTimer);
+        inspectorHideTimer = null;
+      }
     });
+    // Schedule hide when the user leaves the inspector
     inspector.addEventListener('mouseleave', () => {
-      inspector.classList.remove('show');
+      scheduleInspectorHide();
     });
-    // Keyboard: hide on Escape
+    // Keyboard: hide on Escape; also cancel any pending hide
     inspector.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
+        if (inspectorHideTimer) {
+          clearTimeout(inspectorHideTimer);
+          inspectorHideTimer = null;
+        }
         inspector.classList.remove('show');
       }
+    });
+  }
+
+  // Wire action buttons ONCE (not cloned per hover) — they read activePeer
+  const copyBtn = document.getElementById('wt-action-copy');
+  const focusBtn = document.getElementById('wt-action-focus');
+
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      if (!activePeer) return;
+      const agentId = activePeer.agent_id;
+      try {
+        if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+          copyBtn.textContent = '⚠ Clipboard unavailable';
+          copyBtn.setAttribute('disabled', 'true');
+          if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+          copyFeedbackTimer = setTimeout(() => {
+            copyBtn.innerHTML = '<span class="wt-action-icon">📋</span> Copy agent ID';
+            copyBtn.removeAttribute('disabled');
+          }, 2000);
+          return;
+        }
+        await navigator.clipboard.writeText(agentId);
+        copyBtn.innerHTML = '<span class="wt-action-icon">✓</span> Copied!';
+        if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+        copyFeedbackTimer = setTimeout(() => {
+          copyBtn.innerHTML = '<span class="wt-action-icon">📋</span> Copy agent ID';
+        }, 1500);
+      } catch {
+        copyBtn.textContent = '⚠ Copy failed';
+        copyBtn.setAttribute('disabled', 'true');
+        if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+        copyFeedbackTimer = setTimeout(() => {
+          copyBtn.innerHTML = '<span class="wt-action-icon">📋</span> Copy agent ID';
+          copyBtn.removeAttribute('disabled');
+        }, 2000);
+      }
+    });
+  }
+
+  if (focusBtn) {
+    focusBtn.addEventListener('click', () => {
+      if (!activePeer || !activePeerEl) return;
+      focusPeer(activePeer, activePeerEl);
+      if (inspectorHideTimer) {
+        clearTimeout(inspectorHideTimer);
+        inspectorHideTimer = null;
+      }
+      const insp = document.getElementById('wt-inspector');
+      if (insp) insp.classList.remove('show');
     });
   }
 
@@ -221,7 +298,9 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
   }
 
   // ---------------------------------------------------------------------------
-  // buildPeerItem — closure over state + updateUI
+  // buildPeerItem — closure over state + updateUI.
+  // Uses the shared inspectorHideTimer so inspector mouseenter can cancel
+  // the hide scheduled by peer mouseleave.
   // ---------------------------------------------------------------------------
 
   function buildPeerItem(peer: PeerView): HTMLElement {
@@ -249,75 +328,33 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
     li.appendChild(info);
     li.appendChild(presence);
 
-    // Hover inspector — with action buttons and proper cancellation
-    let hideTimer: ReturnType<typeof setTimeout> | null = null;
-
+    // Show inspector — uses shared timer, sets activePeer for action buttons
     function showInspector() {
-      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      // Cancel any pending hide
+      if (inspectorHideTimer) { clearTimeout(inspectorHideTimer); inspectorHideTimer = null; }
+
       const insp = document.getElementById('wt-inspector');
       if (!insp) return;
+
+      // Set active peer so the once-wired action buttons know what to act on
+      activePeer = peer;
+      activePeerEl = li;
+
       const nameEl = document.getElementById('wt-inspect-name');
       const bodyEl = document.getElementById('wt-inspect-body');
       if (nameEl) nameEl.textContent = peer.name || peer.agent_id;
       if (bodyEl) bodyEl.textContent = `${peer.surface} session. ${peer.status}. Profile: ${peer.profile || 'default'}. CWD: ${peer.cwd}`;
+
       const rect = li.getBoundingClientRect();
       insp.style.left = `${rect.right + 12}px`;
       insp.style.top = `${Math.max(86, rect.top - 4)}px`;
       insp.classList.add('show');
-
-      // Wire up action buttons — use fresh clones to avoid stale closures
-      const copyBtn = document.getElementById('wt-action-copy');
-      const focusBtn = document.getElementById('wt-action-focus');
-
-      if (copyBtn) {
-        const newCopyBtn = copyBtn.cloneNode(true) as HTMLElement;
-        copyBtn.parentNode!.replaceChild(newCopyBtn, copyBtn);
-        newCopyBtn.onclick = async () => {
-          try {
-            if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
-              newCopyBtn.textContent = '⚠ Clipboard unavailable';
-              newCopyBtn.setAttribute('disabled', 'true');
-              setTimeout(() => {
-                newCopyBtn.innerHTML = '<span class="wt-action-icon">📋</span> Copy agent ID';
-                newCopyBtn.removeAttribute('disabled');
-              }, 2000);
-              return;
-            }
-            await navigator.clipboard.writeText(peer.agent_id);
-            newCopyBtn.innerHTML = '<span class="wt-action-icon">✓</span> Copied!';
-            setTimeout(() => {
-              newCopyBtn.innerHTML = '<span class="wt-action-icon">📋</span> Copy agent ID';
-            }, 1500);
-          } catch {
-            newCopyBtn.textContent = '⚠ Copy failed';
-            newCopyBtn.setAttribute('disabled', 'true');
-            setTimeout(() => {
-              newCopyBtn.innerHTML = '<span class="wt-action-icon">📋</span> Copy agent ID';
-              newCopyBtn.removeAttribute('disabled');
-            }, 2000);
-          }
-        };
-      }
-
-      if (focusBtn) {
-        const newFocusBtn = focusBtn.cloneNode(true) as HTMLElement;
-        focusBtn.parentNode!.replaceChild(newFocusBtn, focusBtn);
-        newFocusBtn.onclick = () => {
-          focusPeer(peer, li);
-          insp.classList.remove('show');
-        };
-      }
-    }
-
-    function hideInspector() {
-      hideTimer = setTimeout(() => {
-        const insp = document.getElementById('wt-inspector');
-        if (insp) insp.classList.remove('show');
-      }, 300);
     }
 
     li.addEventListener('mouseenter', showInspector);
-    li.addEventListener('mouseleave', hideInspector);
+    li.addEventListener('mouseleave', () => {
+      scheduleInspectorHide();
+    });
 
     // Keyboard: Enter/Space to focus peer
     li.addEventListener('keydown', (e) => {

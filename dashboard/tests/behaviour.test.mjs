@@ -497,7 +497,7 @@ describe('Behaviour-level DOM interaction tests', () => {
 
     // Count initial listeners by checking if inspector mouseenter/mouseleave
     // work correctly (no duplicate handlers causing flicker)
-    // We verify by: hover a peer, move to inspector, move away — should hide cleanly
+    // We verify by: hover a peer, move to inspector, move away — should hide after 300ms
 
     const peerItems = root.querySelectorAll('.wt-peer-item');
     const firstPeer = peerItems[0];
@@ -512,10 +512,10 @@ describe('Behaviour-level DOM interaction tests', () => {
     await wait(50);
     assert.ok(inspector.classList.contains('show'), 'inspector should stay open when hovering it');
 
-    // Move away from inspector (should hide)
+    // Move away from inspector (should hide after 300ms delay)
     dispatchMouse(inspector, 'mouseleave');
-    await wait(50);
-    // After mouseleave, inspector should hide
+    await wait(400);
+    // After 300ms delay, inspector should hide
     assert.ok(!inspector.classList.contains('show'), 'inspector should hide after mouseleave');
   });
 
@@ -732,5 +732,131 @@ describe('Behaviour-level DOM interaction tests', () => {
     await wait(50);
 
     assert.ok(!inspector.classList.contains('show'), 'inspector should hide after Escape');
+  });
+
+  // -----------------------------------------------------------------------
+  // Test 16: Safe-corridor — inspector stays open when moving from peer to inspector
+  // -----------------------------------------------------------------------
+
+  it('inspector stays open when moving from peer to inspector (safe corridor)', async () => {
+    await wait(100);
+    const peerItems = root.querySelectorAll('.wt-peer-item');
+    assert.ok(peerItems.length > 0, 'must have peer items');
+    const firstPeer = peerItems[0];
+    const inspector = root.querySelector('#wt-inspector');
+    assert.ok(inspector, 'inspector must exist');
+
+    // Hover peer to show inspector
+    dispatchMouse(firstPeer, 'mouseenter');
+    await wait(50);
+    assert.ok(inspector.classList.contains('show'), 'inspector should be visible after peer hover');
+
+    // Mouseleave the peer — this schedules a 300ms hide
+    dispatchMouse(firstPeer, 'mouseleave');
+
+    // Immediately mouseenter the inspector — this must cancel the hide timer
+    dispatchMouse(inspector, 'mouseenter');
+
+    // Wait >300ms — the inspector should STILL be visible because the timer was cancelled
+    await wait(400);
+    assert.ok(inspector.classList.contains('show'), 'inspector must remain visible after >300ms when hovering it');
+
+    // Copy action should still work
+    let clipboardWritten = null;
+    const origClipboard = dom.window.navigator.clipboard;
+    dom.window.navigator.clipboard = {
+      writeText: async (text) => { clipboardWritten = text; },
+    };
+
+    const copyBtn = root.querySelector('#wt-action-copy');
+    assert.ok(copyBtn, 'Copy button must exist');
+    copyBtn.click();
+    await wait(100);
+
+    assert.ok(clipboardWritten, 'clipboard.writeText must have been called');
+    assert.ok(clipboardWritten.includes('agent-'), `clipboard should contain agent ID, got: ${clipboardWritten}`);
+
+    dom.window.navigator.clipboard = origClipboard;
+  });
+
+  // -----------------------------------------------------------------------
+  // Test 17: Inspector hides after mouseleave + 300ms
+  // -----------------------------------------------------------------------
+
+  it('inspector hides after mouseleave and 300ms delay', async () => {
+    await wait(100);
+    const peerItems = root.querySelectorAll('.wt-peer-item');
+    const firstPeer = peerItems[0];
+    const inspector = root.querySelector('#wt-inspector');
+
+    // Show inspector
+    dispatchMouse(firstPeer, 'mouseenter');
+    await wait(50);
+    assert.ok(inspector.classList.contains('show'), 'inspector should be visible');
+
+    // Mouseleave the inspector
+    dispatchMouse(inspector, 'mouseleave');
+
+    // Should still be visible before 300ms
+    await wait(100);
+    assert.ok(inspector.classList.contains('show'), 'inspector should still be visible before 300ms');
+
+    // After 300ms, should be hidden
+    await wait(250);
+    assert.ok(!inspector.classList.contains('show'), 'inspector should hide after 300ms delay');
+  });
+
+  // -----------------------------------------------------------------------
+  // Test 18: Repeated refresh does not duplicate event handler outcome
+  // -----------------------------------------------------------------------
+
+  it('repeated refresh does not duplicate event handler outcome', async () => {
+    await wait(100);
+
+    // Trigger refresh by calling the internal refresh function
+    // We simulate this by re-mounting the app (which is what refresh effectively does)
+    // First, verify the inspector works correctly once
+    const peerItems = root.querySelectorAll('.wt-peer-item');
+    const firstPeer = peerItems[0];
+    const inspector = root.querySelector('#wt-inspector');
+
+    // Show inspector
+    dispatchMouse(firstPeer, 'mouseenter');
+    await wait(50);
+    assert.ok(inspector.classList.contains('show'), 'inspector should be visible');
+
+    // Move to inspector, then leave — should hide after 300ms
+    dispatchMouse(inspector, 'mouseenter');
+    dispatchMouse(inspector, 'mouseleave');
+    await wait(400);
+    assert.ok(!inspector.classList.contains('show'), 'inspector should hide after mouseleave');
+
+    // Now re-mount the app (simulating a refresh)
+    const initApp = dom.window.__wt_initApp;
+    initApp(mock.sdk, root);
+    await wait(200);
+
+    // After re-mount, verify the inspector still works correctly
+    // (no duplicate handlers causing flicker or double-hide)
+    const newPeerItems = root.querySelectorAll('.wt-peer-item');
+    assert.ok(newPeerItems.length > 0, 'must have peer items after re-mount');
+    const newFirstPeer = newPeerItems[0];
+    const newInspector = root.querySelector('#wt-inspector');
+    assert.ok(newInspector, 'inspector must exist after re-mount');
+
+    // Show inspector on new peer
+    dispatchMouse(newFirstPeer, 'mouseenter');
+    await wait(50);
+    assert.ok(newInspector.classList.contains('show'), 'inspector should be visible after re-mount');
+
+    // Move to inspector — should stay open
+    dispatchMouse(newInspector, 'mouseenter');
+    await wait(400);
+    assert.ok(newInspector.classList.contains('show'), 'inspector should stay open when hovering it after re-mount');
+
+    // Leave inspector — should hide
+    dispatchMouse(newInspector, 'mouseleave');
+    await wait(400);
+    assert.ok(!newInspector.classList.contains('show'), 'inspector should hide after mouseleave on re-mount');
   });
 });

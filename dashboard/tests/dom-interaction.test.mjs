@@ -170,7 +170,7 @@ describe('DOM-level interaction tests', () => {
 
   it('peer inspector has mouseenter/mouseleave with proper cancellation', () => {
     const src = readFileSync(join(__dirname, '..', 'src', 'app.ts'), 'utf-8');
-    assert.ok(src.includes('hideTimer'), 'app must have hideTimer for inspector cancellation');
+    assert.ok(src.includes('inspectorHideTimer'), 'app must have shared inspectorHideTimer for cancellation');
     assert.ok(src.includes('clearTimeout'), 'app must clear timeout on inspector enter');
   });
 
