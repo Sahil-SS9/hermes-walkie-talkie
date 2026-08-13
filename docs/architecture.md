@@ -208,8 +208,9 @@ with host-owned routing on CLI (`HermesCLI.inject_message`), dashboard
   wrong-user denied at the OS boundary). All Windows tests are native-gated:
   they skip with an explicit reason on non-Windows and become real green
   evidence only on a native Windows runner (CI job `native-windows`).
-- Final V1.1 status is `IMPLEMENTED — WINDOWS RELEASE EVIDENCE BLOCKED`
-  until a native Windows runner is approved and the gated tests pass there.
+- Native Windows CI now verifies the named-pipe and SID/DACL gates. Windows
+  wheel-install and full Desktop/Electron interaction coverage remain
+  explicitly unverified.
 
 ## Extension points
 

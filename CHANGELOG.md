@@ -37,12 +37,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Notes
 
-- Linux is the release-blocking platform for V1.1. macOS CI is configured
-  but execution is deferred to post-goal approved remote CI. Windows is
-  implemented; native release evidence is BLOCKED until an approved native
-  Windows runner exists (final status `IMPLEMENTED — WINDOWS RELEASE
-  EVIDENCE BLOCKED`).
-- This is an unreleased local review candidate (`v0.1.0-rc1`); no Git tag,
+- Native Windows CI is verified on GitHub Actions `windows-latest` for the
+  named-pipe, SID/DACL and real two-process exchange gates (run 31723046182).
+  A Windows wheel-install smoke and full Desktop/Electron interaction remain
+  separate follow-up coverage.
+- This is an unreleased release candidate (`v0.1.0-rc1`); no Git tag,
   package publication or live activation has occurred.
 
 ## [0.1.0-rc1] — unreleased local review candidate

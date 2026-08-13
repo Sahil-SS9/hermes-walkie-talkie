@@ -56,12 +56,12 @@ for the exact commit) or any later commit with the same signatures.
 | OS | Python | Status |
 |---|---|---|
 | Linux | 3.11, 3.12, 3.13 | Verified locally (release-blocking) |
-| macOS | 3.11–3.13 | CI configured; execution deferred to post-goal remote CI |
-| Windows | 3.12 | Backend implemented; native release evidence BLOCKED (no approved native runner). Final status `IMPLEMENTED — WINDOWS RELEASE EVIDENCE BLOCKED` |
+| macOS | 3.11–3.13 | GitHub Actions CI verified |
+| Windows | 3.12 | GitHub Actions native named-pipe and SID/DACL suite verified |
 
-Windows V1.1 support is NOT a v1.1 blocker claim: the named-pipe/DACL
-transport is implemented and native-gated, but the gated tests only become
-green evidence on a real Windows runner (CI job `native-windows`).
+Windows V1.1 support is backed by the `native-windows` CI job. The scope of
+that evidence is the transport and owner-boundary gates; Windows wheel-install
+and full Desktop/Electron interaction remain unverified follow-up coverage.
 
 The minimum Hermes commit is recorded in `docs/review/VERIFICATION.md` and
 `docs/review/HANDOFF.md` after the candidate freeze.

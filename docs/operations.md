@@ -53,8 +53,9 @@ clear error instead of copying a stub.
   active tool turn.
 - Broadcasts are bounded (fan-out ceiling) and explicit about partial
   results; they never block the sender on a slow recipient.
-- Windows release evidence is BLOCKED until a native Windows runner is
-  approved.
+- Native Windows CI covers named-pipe transport and SID/DACL ownership.
+  Windows wheel-install and full Desktop/Electron interaction remain separate
+  follow-up coverage.
 
 ## Upgrades and rollback
 

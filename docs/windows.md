@@ -2,13 +2,17 @@
 
 ## Status
 
-**IMPLEMENTED — WINDOWS RELEASE EVIDENCE BLOCKED**
+**IMPLEMENTED — NATIVE WINDOWS CI VERIFIED**
 
-The Windows local transport (named pipes with SID-bound DACLs) is
-implemented and unit-tested, but the release evidence requires a native
-Windows runner that is not approved on this rig. A Linux/macOS pass is NOT
-Windows evidence (G5.8). The final status will not be marked COMPLETE
-until the native-gated tests pass on a real Windows runner.
+The Windows local transport uses named pipes with SID-bound DACLs. PR #1
+ran the native-gated suites on GitHub Actions `windows-latest` and they
+passed. This is real Windows evidence; a Linux/macOS pass is not substituted
+for it.
+
+The evidence covers the named-pipe transport, ACL owner boundary and
+real two-process exchange. It does not claim a Windows wheel-install smoke
+or a full Hermes Desktop/Electron interaction test; those remain separate
+coverage work.
 
 ## Transport design (ADR-0005)
 

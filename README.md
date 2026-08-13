@@ -93,10 +93,18 @@ uv run python scripts/verify_wheel_assets.py
 cd desktop && npm ci && npm run typecheck && npm run lint && npm test && npm run build
 ```
 
-Linux is the release-blocking platform for V1.1. macOS CI is configured;
-macOS execution is verified post-goal on approved remote CI. Windows is
-implemented but native release evidence is BLOCKED until an approved
-native Windows runner exists (see [docs/windows.md](docs/windows.md)).
+## Release evidence
+
+PR #1 has passed the GitHub Actions matrix on the current branch:
+
+- Python 3.11–3.13 on Ubuntu and macOS
+- Desktop build, typecheck, lint and tests on Ubuntu, macOS and Windows
+- Native Windows named-pipe and ACL suites on `windows-latest`
+
+Windows support is therefore backed by native CI evidence for the transport
+and ACL gates. It does not claim a full Hermes Desktop/Electron interaction
+on Windows or a Windows wheel-install smoke; those remain follow-up release
+coverage, not a reason to infer unsupported behaviour.
 
 ## License
 

@@ -105,5 +105,6 @@ packet's DEVIATIONS.md for the exact scope.
   a separate adapter with explicit authentication/encryption, off by default.
 - No nested groups (membership is a flat agent_id set).
 - Cancellation is advisory — no interrupt seam exists by design.
-- Windows release evidence is BLOCKED until a native Windows runner is
-  approved (final status `IMPLEMENTED — WINDOWS RELEASE EVIDENCE BLOCKED`).
+- Native Windows CI verifies named-pipe transport and the SID/DACL owner
+  boundary. A Windows wheel-install smoke and full Desktop/Electron
+  interaction remain separate follow-up coverage.

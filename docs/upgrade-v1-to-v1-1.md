@@ -53,5 +53,6 @@ exercised. No destructive migration exists.
 - Cancellation is advisory (no interrupt seam).
 - Groups are flat — no nesting.
 - Broadcasts are bounded and report partial results explicitly.
-- Windows release evidence is BLOCKED until a native Windows runner is
-  approved (see `docs/windows.md`).
+- Native Windows CI verifies the named-pipe and SID/DACL transport gates.
+  Windows wheel-install and full Desktop/Electron interaction remain follow-up
+  coverage (see `docs/windows.md`).

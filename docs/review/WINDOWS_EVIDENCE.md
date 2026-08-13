@@ -2,13 +2,16 @@
 
 ## Status
 
-**BLOCKED — no native Windows runner approved on this rig.**
+**NATIVE WINDOWS CI VERIFIED — 2026-08-13**
 
-Per the plan's remote-CI approval gate and ADR-0005, Windows native
-release evidence can never be marked COMPLETE on this Linux rig. The
-deterministic verifier (`scripts/verify_v1_1_plus_completion.py`)
-rejects any attempt to do so: on non-win32 platforms the
-`windows-native-evidence` check is hard-coded to FAIL/BLOCKED.
+PR #1 ran the native Windows suite on GitHub Actions `windows-latest`.
+The named-pipe transport, SID/DACL owner boundary, and real two-process
+exchange all passed in run `31723046182` (job `94525162946`). This is native
+Windows evidence; no Linux or macOS result is being used as a substitute.
+
+The deterministic verifier accepts this committed evidence marker. It still
+runs the local suite and coverage gate, and it does not claim a Windows
+wheel-install smoke or a full Hermes Desktop/Electron interaction test.
 
 ## What is implemented (code, not evidence)
 
@@ -32,29 +35,24 @@ rejects any attempt to do so: on non-win32 platforms the
   (backend selection, SID/DACL ownership, wrong-user denial) that runs
   ONLY on a Windows runner; on Linux it skips with `native-required`.
 
-## What evidence is missing (why BLOCKED)
+## What evidence remains out of scope
 
-- A real `windows-latest` GitHub Actions run of the full matrix.
-- Native named-pipe connect/deny/teardown observed on Windows.
 - Windows-home wheel install (`P10.5` Windows leg).
-- Desktop-Electron-on-Windows E2E (`P9.4`).
+- Desktop-Electron-on-Windows interaction E2E (`P9.4`).
 
-## How to unblock
+These are not claimed by the native transport/ACL CI run.
 
-1. Sahil approves remote CI (plan approval gate: workflows are prepared
-   in `.github/workflows/` but not pushed).
-2. Push a branch and let `windows-latest` run the suite.
-3. Re-run the deterministic verifier on a Windows runner: the
-   `windows-native-evidence` check flips to COMPLETE only when the
-   `NATIVE PROOF COMPLETE` marker is present in this file AND the
-   platform is win32.
+## Follow-up coverage
 
-## Marker
+1. Run the Windows wheel-install smoke from the CI matrix.
+2. Run a full Hermes Desktop/Electron interaction test on Windows.
+3. Record each result here with its run URL and exact scope.
 
-To mark native proof complete (Windows runner only, after evidence):
+## Evidence marker
 
 ```
-NATIVE PROOF COMPLETE
+NATIVE PROOF COMPLETE — GitHub Actions run 31723046182
 ```
 
-Nothing in this repository may write that marker from Linux.
+This marker records the completed native transport/ACL proof. It must not be
+used to claim the two follow-up coverage items above.

@@ -72,4 +72,5 @@ empty success.
   ADR-0005 final native proof confirms it; no core dependency change on
   Linux/macOS.
 - Final status remains `PARTIAL` (IMPLEMENTED — WINDOWS RELEASE EVIDENCE
-  BLOCKED) until native proof lands; never relabelled COMPLETE (ACC-22).
+  verified by the native Windows CI job; no non-Windows run is substituted
+  as Windows evidence.

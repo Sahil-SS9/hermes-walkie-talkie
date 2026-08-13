@@ -1,54 +1,35 @@
-# Deviations and known limitations — V1.1+
+# Deviations and known limitations — V1.1
 
-Every deviation from the plan is recorded here with its rationale.
-Nothing here is hidden; anything marked unverified stays unverified.
+This file records actual remaining limits. Historic statements that remote CI
+had not run are superseded by PR #1 evidence.
 
-## Plan deviations
+## Evidence status
 
-1. **Native Windows release evidence BLOCKED (never COMPLETE).** Per the
-   plan's remote-CI approval gate and ADR-0005, the Windows named-pipe
-   backend is implemented (fail-closed SID/DACL) but native proof —
-   `windows-latest` CI, real named-pipe connect/deny/teardown, Windows
-   wheel install, Desktop-on-Windows E2E — has not been executed on this
-   rig. The deterministic verifier hard-fails this check on non-win32.
-   Status: `IMPLEMENTED — WINDOWS RELEASE EVIDENCE BLOCKED`.
+1. **Native Windows transport and ACL evidence is complete.** GitHub Actions
+   run `31723046182` executed the `native-windows` job on `windows-latest` and
+   passed named-pipe, SID/DACL and real multi-process exchange gates.
+2. **macOS CI is complete.** Python 3.11–3.13 and the Desktop build jobs passed
+   in the same PR matrix.
+3. **Windows wheel-install and full Desktop/Electron interaction are not yet
+   covered.** They are explicit follow-up coverage, not claims made by the
+   current native transport job.
+4. **Live host activation remains conditional.** Walkie Talkie uses Hermes'
+   public queued injection seam. The upstream queue/steer/interrupt work is
+   tracked separately in NousResearch/hermes-agent PR #85279.
 
-2. **Remote CI not started.** `.github/workflows/ci.yml` (ubuntu/macos/
-   windows × py3.11–3.13) and the desktop build workflow are prepared
-   but not pushed or run. Pushing is gated on Sahil's explicit approval
-   (plan approval gate). macOS execution also deferred for this reason.
+## Known limitations
 
-3. **macOS execution not performed.** Same remote-CI gate; macOS-specific
-   peer-credential paths are covered by unit tests but not executed on a
-   real macOS runner.
+- Same-machine, same-OS-user only: no cross-machine transport, file transfer
+  or remote execution.
+- Groups are flat: no nesting.
+- Cancellation is advisory: it does not interrupt an active model/tool turn.
+- Metrics and events are content-free: no message bodies, prompts, credentials
+  or outbound telemetry.
+- The Desktop bundle is built and tested in CI, but a real Hermes
+  Desktop/Electron interaction run on Windows is not yet recorded.
 
-4. **P10.5 Windows wheel-install leg not run.** The Linux leg ran clean
-   (disposable venv + doctor + desktop install). The Windows leg stays
-   unticked pending a Windows runner.
+## Not implied by merge
 
-5. **Plan checkboxes ticked post-hoc.** All 109 plan sub-goals are now
-   ticked where genuinely complete (101), with 8 deliberately left
-   unticked (P9.2/P9.4/P9.9 Windows evidence, P10.5 Windows leg, and
-   P11.9–P11.12 review-packet/independent-review steps still in flight).
-   The ticker script records what was done; the deterministic verifier
-   independently validates reality and accepts only the documented
-   blocked/pending set as unchecked.
-
-## Known limitations (V1.1)
-
-- Groups are flat (no nesting); cancellation is advisory (no interrupt
-  seam).
-- Cross-machine transport, file transfer and remote execution are out of
-  scope.
-- Metrics/events are content-free by design (G1.2/G1.3) — no message
-  bodies, prompts, credentials or outbound telemetry.
-- Desktop live activation inside Hermes Desktop with the real plugin
-  host was not exercised on this rig (requires a desktop app session).
-
-## Things explicitly NOT claimed
-
-- No Windows-native security evidence is claimed.
-- No macOS execution is claimed.
-- No remote CI run is claimed.
-- No live Desktop activation is claimed.
-- Nothing was pushed, merged, published, tagged, installed or activated.
+A PR merge does not publish a package, install the plugin, enable it in a
+Hermes profile or activate the Desktop bundle. Those are explicit later
+operator actions.

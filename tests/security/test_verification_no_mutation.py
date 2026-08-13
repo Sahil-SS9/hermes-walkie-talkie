@@ -40,6 +40,19 @@ class TestVerificationNoMutation:
         # The check must run after both the suite and the coverage gate.
         assert src.index("coverage-gate") < src.index("post-gate-clean")
 
+    def test_verifier_accepts_recorded_native_windows_evidence(self):
+        """A native CI marker must be usable from the Linux review host."""
+        src = (REPO / "scripts/verify_v1_1_plus_completion.py").read_text(encoding="utf-8")
+        assert "NATIVE PROOF COMPLETE" in src
+        assert "if WINDOWS_EVIDENCE.exists()" in src
+        assert "if sys.platform == \"win32\"" not in src
+
+    def test_verifier_does_not_require_missing_historical_core_worktrees(self):
+        """The current PR gate cannot depend on a retired local worktree path."""
+        src = (REPO / "scripts/verify_v1_1_plus_completion.py").read_text(encoding="utf-8")
+        assert "FROZEN_CORE_WORKTREES" not in src
+        assert "LOCKED_CORE_SHA" not in src
+
     def test_suite_collection_does_not_dirty_tree(self):
         """Collecting/importing the full test suite mutates nothing."""
         before = _porcelain()
