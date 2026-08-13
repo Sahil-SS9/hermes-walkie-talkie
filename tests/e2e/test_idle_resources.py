@@ -11,8 +11,15 @@ import os
 import time
 import uuid
 
+import pytest
+
 from agent_peer.models import PeerRecord, ReceiptState
 from agent_peer.runtime import PeerRuntimeManager
+
+pytestmark = pytest.mark.skipif(
+    not os.path.isdir("/proc/self"),
+    reason="/proc/<pid>/stat CPU measurement is Linux-only (no procfs on macOS/Windows)",
+)
 
 
 def _record() -> PeerRecord:
