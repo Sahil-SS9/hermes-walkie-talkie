@@ -476,6 +476,8 @@ class PeerRuntimeManager:
         while not self._stop_event.is_set():
             try:
                 conn = listener.accept()  # type: ignore[attr-defined]
+                if conn is None:
+                    continue  # accept timeout — check stop event and retry
             except Exception:
                 return  # listener closed during teardown
             try:

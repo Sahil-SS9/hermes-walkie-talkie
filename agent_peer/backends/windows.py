@@ -114,17 +114,45 @@ class _WindowsListener:
             "bounded per-listener wait thread (P2 native gate)"
         )
 
-    def accept(self) -> _WindowsPipeConnection:  # pragma: no cover - native only
-        """Block on ConnectNamedPipe and return the accepted connection."""
+    def accept(self) -> _WindowsPipeConnection | None:  # pragma: no cover - native only
+        """Block on ConnectNamedPipe and return the accepted connection.
+
+        Uses overlapped I/O with a 500ms poll so the caller can check a
+        stop event between polls. Returns None on timeout so the caller's
+        loop can decide whether to retry or exit.
+
+        Synchronous ConnectNamedPipe (NULL overlapped) blocks forever and
+        cannot be cancelled — CloseHandle on a handle with a pending
+        synchronous pipe operation deadlocks.
+        """
         if sys.platform != "win32":
             raise NotImplementedError(
                 "WindowsTransportBackend requires native Windows execution "
                 "(ADR-0005); Linux/macOS must never fabricate Windows evidence"
             )
+        import pywintypes
+        import win32event
         import win32pipe
 
-        win32pipe.ConnectNamedPipe(self._pipe, None)
-        return _WindowsPipeConnection(self._pipe)
+        overlapped = pywintypes.OVERLAPPED()
+        overlapped.hEvent = win32event.CreateEvent(None, True, False, None)
+
+        try:
+            try:
+                win32pipe.ConnectNamedPipe(self._pipe, overlapped)
+            except pywintypes.error as exc:
+                # ERROR_PIPE_CONNECTED (535) — client already connected
+                if exc.winerror == 535:
+                    return _WindowsPipeConnection(self._pipe)
+                raise
+
+            # Poll with 500ms timeout — caller checks stop event on None
+            result = win32event.WaitForSingleObject(overlapped.hEvent, 500)
+            if result == win32event.WAIT_OBJECT_0:
+                return _WindowsPipeConnection(self._pipe)
+            return None  # timeout — caller decides whether to retry
+        finally:
+            win32event.CloseHandle(overlapped.hEvent)
 
     def close(self) -> None:  # pragma: no cover - native only
         """Close the named-pipe handle (no unlink — pipes have no FS node)."""
