@@ -10,7 +10,7 @@
  *   - Speech-to-text panel
  */
 
-import { createApi, type DashboardHost, type PeerView, type RequestView, type InboxRowView } from './api';
+import { createApi, type HermesPluginSDK, type PeerView, type RequestView, type InboxRowView } from './api';
 import type { AppState } from './types';
 import { applyTheme, getStoredTheme, getThemeById, setStoredTheme } from './theme';
 import { renderHeader } from './components/header';
@@ -20,8 +20,8 @@ import { renderWorkspace } from './components/workspace';
 import { renderModals } from './components/modals';
 import { renderSpeechToText } from './components/speech-to-text';
 
-export function initApp(host: DashboardHost): void {
-  const api = createApi(host);
+export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
+  const api = createApi(sdk);
 
   // Initial theme
   const stored = getStoredTheme();
@@ -42,7 +42,7 @@ export function initApp(host: DashboardHost): void {
   };
 
   // Build DOM shell
-  const root = document.getElementById('root') || document.body;
+  const root = rootEl || document.getElementById('root') || document.body;
   root.innerHTML = '';
   root.className = 'wt-dashboard';
 
@@ -56,8 +56,8 @@ export function initApp(host: DashboardHost): void {
   shell.className = 'wt-shell';
   root.appendChild(shell);
 
-  // Header
-  const header = renderHeader(state, (themeId) => {
+  // Header — pass sdk for profile label
+  const header = renderHeader(state, sdk, (themeId) => {
     state.activeTheme = themeId;
     setStoredTheme(themeId);
     applyTheme(getThemeById(themeId));
@@ -78,7 +78,10 @@ export function initApp(host: DashboardHost): void {
   layout.appendChild(peerRail);
 
   // Main workspace
-  const workspace = renderWorkspace(state, api);
+  const workspace = renderWorkspace(state, api, (tab) => {
+    state.activeTab = tab;
+    updateUI();
+  });
   layout.appendChild(workspace);
 
   // Modals
@@ -188,8 +191,11 @@ function buildPeerItem(peer: PeerView): HTMLElement {
   li.appendChild(info);
   li.appendChild(presence);
 
-  // Hover inspector
-  li.addEventListener('mouseenter', () => {
+  // Hover inspector — with action buttons and proper cancellation
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function showInspector() {
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     const inspector = document.getElementById('wt-inspector');
     if (!inspector) return;
     const nameEl = document.getElementById('wt-inspect-name');
@@ -200,11 +206,28 @@ function buildPeerItem(peer: PeerView): HTMLElement {
     inspector.style.left = `${rect.right + 12}px`;
     inspector.style.top = `${Math.max(86, rect.top - 4)}px`;
     inspector.classList.add('show');
-  });
-  li.addEventListener('mouseleave', () => {
-    const inspector = document.getElementById('wt-inspector');
-    if (inspector) setTimeout(() => inspector.classList.remove('show'), 220);
-  });
+  }
+
+  function hideInspector() {
+    hideTimer = setTimeout(() => {
+      const inspector = document.getElementById('wt-inspector');
+      if (inspector) inspector.classList.remove('show');
+    }, 300);
+  }
+
+  li.addEventListener('mouseenter', showInspector);
+  li.addEventListener('mouseleave', hideInspector);
+
+  // Inspector itself: cancel hide on enter, hide on leave
+  const inspector = document.getElementById('wt-inspector');
+  if (inspector) {
+    inspector.addEventListener('mouseenter', () => {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    });
+    inspector.addEventListener('mouseleave', () => {
+      inspector.classList.remove('show');
+    });
+  }
 
   return li;
 }
@@ -319,10 +342,10 @@ function buildInboxTab(state: AppState): HTMLElement {
     li.setAttribute('data-sender', m.sender_peer_id);
     li.innerHTML = `<span class="wt-row-title">[${escapeHtml(m.state)}]</span><span class="wt-row-meta">${escapeHtml(m.content.slice(0, 80))}</span>`;
     li.onclick = () => openReceiptModal(m);
-    div.appendChild(li);
+    list.appendChild(li);
   }
-  list.appendChild(div.firstChild!);
-  return list;
+  div.appendChild(list);
+  return div;
 }
 
 function buildRequestsTab(state: AppState): HTMLElement {

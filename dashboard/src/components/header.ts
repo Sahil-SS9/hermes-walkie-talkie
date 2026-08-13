@@ -1,11 +1,15 @@
 /**
  * Header component — transmission icon, brand, theme picker, profile badge.
+ *
+ * Profile label is read from the host SDK (sdk.api.getProfile?.() or
+ * falls back to "hermes-peer").
  */
 
 import type { AppState } from '../types';
+import type { HermesPluginSDK } from '../api';
 import { THEMES } from '../theme';
 
-export function renderHeader(state: AppState, onThemeChange: (id: string) => void): HTMLElement {
+export function renderHeader(state: AppState, sdk: HermesPluginSDK, onThemeChange: (id: string) => void): HTMLElement {
   const header = document.createElement('header');
   header.className = 'wt-header';
 
@@ -68,10 +72,19 @@ export function renderHeader(state: AppState, onThemeChange: (id: string) => voi
   header.appendChild(themeBtn);
   header.appendChild(themePop);
 
-  // Profile badge
+  // Profile badge — read from host SDK
+  let profileLabel = 'hermes-peer';
+  try {
+    // The host SDK may expose the active profile via api.getProfile()
+    if (typeof sdk.api.getProfile === 'function') {
+      const p = sdk.api.getProfile();
+      if (p && typeof p === 'string') profileLabel = p;
+    }
+  } catch { /* use fallback */ }
+
   const profileBtn = document.createElement('button');
   profileBtn.className = 'wt-header-btn';
-  profileBtn.textContent = 'kensei / default';
+  profileBtn.textContent = profileLabel;
   profileBtn.setAttribute('aria-label', 'Current profile');
   header.appendChild(profileBtn);
 

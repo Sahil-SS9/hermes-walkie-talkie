@@ -1,17 +1,14 @@
 /**
  * Typed API client for the Walkie-Talkie Dashboard plugin.
  *
- * All reads go through the host-injected `__HERMES_DASHBOARD_API__` which
- * namespace-scopes REST calls to /api/plugins/hermes-peer. The socket is
- * an accelerator; polling remains the authoritative fallback.
+ * Adapts the real Hermes Dashboard Plugin SDK
+ * (window.__HERMES_PLUGIN_SDK__) to the plugin's internal API surface.
+ *
+ * REST calls use the host's authenticated fetchJSON; WebSocket events use
+ * buildWsUrl + native WebSocket.  No direct SQLite / filesystem reads.
  */
 
-export interface DashboardHost {
-  rest<T = any>(path: string, opts?: { method?: string; body?: unknown }): Promise<T>;
-  socket(path: string, onMessage: (data: any) => void): () => void;
-  profile: string;
-}
-
+// Re-export the view types (unchanged).
 export interface PeerView {
   peer_id: string;
   agent_id: string;
@@ -69,31 +66,75 @@ export interface EventsFrame {
   events: Array<{ kind: string; [key: string]: unknown }>;
 }
 
-export function createApi(host: DashboardHost) {
+// ---------------------------------------------------------------------------
+// SDK surface (the real contract from window.__HERMES_PLUGIN_SDK__)
+// ---------------------------------------------------------------------------
+
+export interface HermesPluginSDK {
+  readonly sdkVersion: string;
+  React: any;
+  hooks: {
+    useState: any; useEffect: any; useCallback: any;
+    useMemo: any; useRef: any; useContext: any; createContext: any;
+  };
+  api: Record<string, (...args: any[]) => any>;
+  fetchJSON: <T = any>(url: string, init?: RequestInit, options?: { allowUnauthorized?: boolean }) => Promise<T>;
+  authedFetch: (url: string, init?: RequestInit) => Promise<Response>;
+  buildWsUrl: (path: string, params?: Record<string, string>) => Promise<string>;
+  buildWsAuthParam: () => Promise<[string, string]>;
+  components: Record<string, any>;
+  utils: { cn: (...classes: Array<string | false | null | undefined>) => string; timeAgo: (ts: number) => string; isoTimeAgo: (iso: string) => string };
+  useI18n: () => any;
+}
+
+// ---------------------------------------------------------------------------
+// API factory — adapts the real SDK to the plugin's internal surface
+// ---------------------------------------------------------------------------
+
+const BASE = '/api/plugins/hermes-peer';
+
+export function createApi(sdk: HermesPluginSDK) {
   return {
-    health: (): Promise<HealthView> => host.rest('/health'),
-    metrics: (): Promise<Record<string, unknown>> => host.rest('/metrics'),
-    peers: (): Promise<{ peers: PeerView[] }> => host.rest('/peers'),
-    groups: (): Promise<{ groups: GroupView[] }> => host.rest('/groups'),
+    health: (): Promise<HealthView> => sdk.fetchJSON(`${BASE}/health`),
+    metrics: (): Promise<Record<string, unknown>> => sdk.fetchJSON(`${BASE}/metrics`),
+    peers: (): Promise<{ peers: PeerView[] }> => sdk.fetchJSON(`${BASE}/peers`),
+    groups: (): Promise<{ groups: GroupView[] }> => sdk.fetchJSON(`${BASE}/groups`),
     createGroup: (name: string): Promise<GroupView> =>
-      host.rest('/groups', { method: 'POST', body: { name } }),
+      sdk.fetchJSON(`${BASE}/groups`, { method: 'POST', body: JSON.stringify({ name }), headers: { 'Content-Type': 'application/json' } }),
     groupMembers: (groupId: string): Promise<{ group_id: string; members: Array<{ agent_id: string; peer_id: string }> }> =>
-      host.rest(`/groups/${groupId}/members`),
+      sdk.fetchJSON(`${BASE}/groups/${encodeURIComponent(groupId)}/members`),
     addMember: (groupId: string, agentId: string): Promise<{ added: boolean }> =>
-      host.rest(`/groups/${groupId}/members`, { method: 'POST', body: { agent_id: agentId } }),
+      sdk.fetchJSON(`${BASE}/groups/${encodeURIComponent(groupId)}/members`, { method: 'POST', body: JSON.stringify({ agent_id: agentId }), headers: { 'Content-Type': 'application/json' } }),
     broadcastOutcomes: (broadcastId: string): Promise<{ per_member: BroadcastChildView[] }> =>
-      host.rest(`/broadcasts/${broadcastId}`),
-    inbox: (): Promise<{ messages: InboxRowView[] }> => host.rest('/inbox'),
-    requests: (): Promise<{ requests: RequestView[] }> => host.rest('/requests'),
+      sdk.fetchJSON(`${BASE}/broadcasts/${encodeURIComponent(broadcastId)}`),
+    inbox: (): Promise<{ messages: InboxRowView[] }> => sdk.fetchJSON(`${BASE}/inbox`),
+    requests: (): Promise<{ requests: RequestView[] }> => sdk.fetchJSON(`${BASE}/requests`),
     requestDetail: (requestId: string): Promise<RequestView> =>
-      host.rest(`/requests/${requestId}`),
+      sdk.fetchJSON(`${BASE}/requests/${encodeURIComponent(requestId)}`),
     respond: (requestId: string, action: string, detail?: string): Promise<RequestView> =>
-      host.rest(`/requests/${requestId}/respond`, {
+      sdk.fetchJSON(`${BASE}/requests/${encodeURIComponent(requestId)}/respond`, {
         method: 'POST',
-        body: { action, detail: detail || '' },
+        body: JSON.stringify({ action, detail: detail || '' }),
+        headers: { 'Content-Type': 'application/json' },
       }),
-    onEvents: (fn: (frame: EventsFrame) => void): (() => void) =>
-      host.socket('/events', fn),
+
+    /** WebSocket events — uses the host's buildWsUrl for auth. */
+    onEvents: (fn: (frame: EventsFrame) => void): (() => void) => {
+      let ws: WebSocket | null = null;
+      let cancelled = false;
+      sdk.buildWsUrl(`${BASE}/events`).then((url) => {
+        if (cancelled) return;
+        ws = new WebSocket(url);
+        ws.onmessage = (e) => {
+          try { fn(JSON.parse(e.data as string)); } catch { /* ignore malformed frames */ }
+        };
+        ws.onerror = () => { /* socket errors are non-fatal; polling is the fallback */ };
+      }).catch(() => { /* buildWsUrl failed; polling is the fallback */ });
+      return () => {
+        cancelled = true;
+        try { ws?.close(); } catch { /* ignore */ }
+      };
+    },
   };
 }
 

@@ -10,10 +10,11 @@
     "test": "node --experimental-vm-modules --test tests/*.test.mjs"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.25.12",
+    "jsdom": "^30.0.1",
     "typescript": "^5.6.0"
   },
   "allowScripts": {
-    "esbuild@0.24.2": true
+    "esbuild@0.25.12": true
   }
 }

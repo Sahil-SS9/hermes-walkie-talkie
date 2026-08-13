@@ -1,7 +1,11 @@
 /**
  * Control Room — attention banner and deep-link only.
  * Shows count of held messages + pending requests.
- * Clicking opens the Control Room (deep-link placeholder).
+ *
+ * The "Open Control Room" action is rendered as a disabled button with an
+ * explanatory tooltip because the host SDK does not yet expose a
+ * programmatic navigation deep-link.  When the SDK adds a router.navigate
+ * or similar contract, this can be wired up.
  */
 
 export function renderControlRoom(): HTMLElement {
@@ -16,18 +20,10 @@ export function renderControlRoom(): HTMLElement {
       <b>Control Room has <span class="wt-cr-count">0</span> items for you</b>
       <span>Held messages and structured requests that need attention.</span>
     </div>
-    <button class="wt-btn wt-btn-primary" title="Open the compact command surface" aria-label="Open Control Room">
-      Open Control Room ↗
+    <button class="wt-btn" disabled title="Control Room deep-link not yet available in this host SDK version" aria-label="Control Room unavailable">
+      Control Room unavailable
     </button>
   `;
-
-  const btn = div.querySelector('button');
-  if (btn) {
-    btn.onclick = () => {
-      // Deep-link placeholder — in production this opens the Control Room surface
-      alert('Control Room: deep-link to the compact command surface. (Placeholder — full integration pending.)');
-    };
-  }
 
   return div;
 }

@@ -1,7 +1,7 @@
 {
   "inputs": {
     "src/api.ts": {
-      "bytes": 3175,
+      "bytes": 5440,
       "imports": [],
       "format": "esm"
     },
@@ -11,7 +11,7 @@
       "format": "esm"
     },
     "src/components/header.ts": {
-      "bytes": 2668,
+      "bytes": 3161,
       "imports": [
         {
           "path": "src/theme.ts",
@@ -22,7 +22,7 @@
       "format": "esm"
     },
     "src/components/control-room.ts": {
-      "bytes": 1128,
+      "bytes": 1075,
       "imports": [],
       "format": "esm"
     },
@@ -32,7 +32,7 @@
       "format": "esm"
     },
     "src/components/workspace.ts": {
-      "bytes": 1435,
+      "bytes": 1402,
       "imports": [],
       "format": "esm"
     },
@@ -47,7 +47,7 @@
       "format": "esm"
     },
     "src/app.ts": {
-      "bytes": 14278,
+      "bytes": 15049,
       "imports": [
         {
           "path": "src/api.ts",
@@ -103,7 +103,7 @@
       ]
     },
     "src/index.ts": {
-      "bytes": 1344,
+      "bytes": 3132,
       "imports": [
         {
           "path": "src/app.ts",
@@ -120,8 +120,8 @@
     }
   },
   "bytes": {
-    "js": 18472,
+    "js": 19658,
     "css": 10558
   },
-  "builtAt": "2026-08-13T18:50:47.148Z"
+  "builtAt": "2026-08-13T18:59:16.121Z"
 }

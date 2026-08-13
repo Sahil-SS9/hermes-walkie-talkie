@@ -1,11 +1,17 @@
 /**
  * Main workspace — tabbed content area.
+ *
+ * Tab switching uses an explicit render callback (passed from app.ts).
  */
 
 import type { AppState } from '../types';
 import type { Api } from '../api';
 
-export function renderWorkspace(state: AppState, api: Api): HTMLElement {
+export function renderWorkspace(
+  state: AppState,
+  api: Api,
+  onTabChange?: (tab: AppState['activeTab']) => void,
+): HTMLElement {
   const main = document.createElement('main');
   main.className = 'wt-workspace';
 
@@ -29,13 +35,8 @@ export function renderWorkspace(state: AppState, api: Api): HTMLElement {
       // Re-render tabs
       tabs.querySelectorAll('.wt-tab').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
-      // Trigger refresh
-      const body = main.querySelector('.wt-workspace-body');
-      if (body) {
-        body.innerHTML = '';
-        // The app's updateUI will handle this on next refresh cycle
-        (window as any).__wt_refresh?.();
-      }
+      // Use the explicit render callback
+      if (onTabChange) onTabChange(key);
     };
     tabs.appendChild(btn);
   }
