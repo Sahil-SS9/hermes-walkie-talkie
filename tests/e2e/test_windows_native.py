@@ -39,25 +39,37 @@ def test_named_pipe_two_process_exchange():
 
     tmp = Path(__import__("tempfile").mkdtemp())
     worker = r"""
-import json, os, sys, uuid
+import json, os, sys, uuid, traceback
 from datetime import UTC, datetime
 from agent_peer.models import PeerRecord, Presence
 from agent_peer.runtime import PeerRuntimeManager
 
-role = sys.argv[1]
-root = sys.argv[2]
-runtime = PeerRuntimeManager(root)
-rec = PeerRecord(
-    peer_id=sys.argv[3], instance_id=str(uuid.uuid4()),
-    session_id=f"session-{role}", name=role, profile="default",
-    surface="cli", started_at=datetime.now(UTC).isoformat(),
-    last_seen=datetime.now(UTC).isoformat(), status=Presence.IDLE.value,
-)
-handle = runtime.register_peer(rec, on_message=lambda env: "queued")
-print(json.dumps({"role": role, "peer_id": rec.peer_id, "ok": True}), flush=True)
-sys.stdin.read()
-handle.close()
-runtime.shutdown()
+def _trace(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+try:
+    role = sys.argv[1]
+    root = sys.argv[2]
+    _trace(f"[{role}] starting PeerRuntimeManager(root={root})")
+    runtime = PeerRuntimeManager(root)
+    _trace(f"[{role}] runtime created, backend={runtime._backend.__class__.__name__}")
+    rec = PeerRecord(
+        peer_id=sys.argv[3], instance_id=str(uuid.uuid4()),
+        session_id=f"session-{role}", name=role, profile="default",
+        surface="cli", started_at=datetime.now(UTC).isoformat(),
+        last_seen=datetime.now(UTC).isoformat(), status=Presence.IDLE.value,
+    )
+    _trace(f"[{role}] calling register_peer(peer_id={rec.peer_id[:8]})")
+    handle = runtime.register_peer(rec, on_message=lambda env: "queued")
+    _trace(f"[{role}] register_peer returned, socket_path={rec.socket_path}")
+    print(json.dumps({"role": role, "peer_id": rec.peer_id, "ok": True}), flush=True)
+    # hold open until stdin closes
+    sys.stdin.read()
+    handle.close()
+    runtime.shutdown()
+except Exception:
+    traceback.print_exc()
+    sys.exit(1)
 """
     b_peer = str(uuid.uuid4())
     env_b_root = str(tmp / "runtime-b")

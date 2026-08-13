@@ -121,7 +121,12 @@ class PeerRuntimeManager:
         # of the POSIX selector. Keyed by peer_id for teardown.
         self._is_windows = os.name != "posix"
         self._windows_threads: dict[str, threading.Thread] = {}
-        self._wakeup_r, self._wakeup_w = os.pipe()
+        # Use socketpair for wakeup — works with selectors on ALL platforms.
+        # os.pipe() FDs are not selectable on Windows where SelectSelector
+        # only supports sockets, causing silent failures if the selector
+        # loop is ever invoked.
+        self._wakeup_r, self._wakeup_w = socket.socketpair()
+        self._wakeup_r.setblocking(False)
         self._selector.register(self._wakeup_r, selectors.EVENT_READ, "wakeup")
 
     # ------------------------------------------------------------------
@@ -406,10 +411,10 @@ class PeerRuntimeManager:
             self._stop_event.set()
             self._wakeup()
             self._join_thread()
-            # Close wakeup pipe FDs exactly once.
-            for fd in (self._wakeup_r, self._wakeup_w):
+            # Close wakeup sockets exactly once.
+            for sock in (self._wakeup_r, self._wakeup_w):
                 with contextlib.suppress(OSError):
-                    os.close(fd)
+                    sock.close()
             with suppress(Exception):
                 self._selector.close()
             self._shutdown_done = True
@@ -477,7 +482,7 @@ class PeerRuntimeManager:
 
     def _wakeup(self) -> None:
         with contextlib.suppress(OSError):
-            os.write(self._wakeup_w, b"x")
+            self._wakeup_w.send(b"x")
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -488,7 +493,7 @@ class PeerRuntimeManager:
             for key, _mask in events:
                 if key.data == "wakeup":
                     with contextlib.suppress(OSError):
-                        os.read(self._wakeup_r, 64)
+                        self._wakeup_r.recv(64)
                     continue
                 if key.data == "listen":
                     self._accept(key.fileobj)  # type: ignore[arg-type]
