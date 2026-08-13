@@ -300,12 +300,29 @@ class Registry:
 
     def _atomic_write(self, path: Path, data: dict) -> None:
         tmp = path.with_suffix(".tmp")
+        # File-based trace for Windows diagnosis
+        import os as _os
+        import pathlib as _pl
+        _tracefile = _pl.Path(_os.environ.get("TEMP", "/tmp")) / "agent_peer_trace.log"
+        def _t(msg):
+            try:
+                with open(_tracefile, "a") as _tf:
+                    _tf.write(f"_atomic_write: {msg}\n")
+            except Exception:
+                pass
+        _t(f"os.open({tmp})")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        _t("os.open done")
         try:
             os.fchmod(fd, 0o600)
+            _t("fchmod done")
             os.write(fd, json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            _t("os.write done")
             if os.name == "posix":
                 os.fsync(fd)
         finally:
+            _t("os.close")
             os.close(fd)
+        _t(f"os.replace({tmp}, {path})")
         os.replace(tmp, path)
+        _t("done")
