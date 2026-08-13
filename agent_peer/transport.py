@@ -34,12 +34,20 @@ def peer_credentials(sock: socket.socket | None = None) -> dict:
             return {"pid": pid, "uid": uid, "gid": gid}
         except OSError:
             pass
+    if os.name != "posix":
+        # Windows: named-pipe SID/DACL is the owner boundary (ADR-0005);
+        # no POSIX uid/gid exists. Mark credentials as platform-enforced.
+        return {"pid": os.getpid(), "uid": None, "gid": None}
     return {"pid": os.getpid(), "uid": os.geteuid(), "gid": os.getegid()}
 
 
 def verify_peer_credentials(creds: dict) -> bool:
     """Same-UID check: reject peers that do not belong to the OS user."""
     uid = creds.get("uid")
+    if uid is None:
+        # Windows: ownership is enforced by the SID-bound DACL at the
+        # named-pipe boundary; there is no POSIX uid to compare.
+        return os.name != "posix"
     return isinstance(uid, int) and uid == os.geteuid()
 
 

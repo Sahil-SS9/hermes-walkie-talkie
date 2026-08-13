@@ -26,7 +26,7 @@ from pathlib import Path
 
 from .constants import STALE_THRESHOLD
 from .models import PeerRecord, Presence
-from .paths import RuntimePaths
+from .paths import RuntimePaths, same_owner
 
 logger = logging.getLogger("agent_peer.registry")
 
@@ -215,7 +215,7 @@ class Registry:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
                 return None
-            if st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) & 0o077:
+            if not same_owner(st) or stat.S_IMODE(st.st_mode) & 0o077:
                 logger.warning("registry: refusing non-owner-only record %s", path)
                 return None
             raw = os.read(fd, 65_537)

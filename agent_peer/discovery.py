@@ -42,7 +42,7 @@ from .codec import decode_envelope, encode_envelope
 from .constants import PROTOCOL_ID
 from .errors import AgentPeerError
 from .models import Envelope, Kind, PeerIdentity, PeerRecord
-from .paths import RuntimePaths, select_runtime_dir
+from .paths import RuntimePaths, select_runtime_dir, same_owner
 from .registry import Registry
 
 logger = logging.getLogger("agent_peer.discovery")
@@ -118,7 +118,7 @@ def _parse_record(
             return None
         if not stat.S_ISSOCK(sock_st.st_mode):
             return None
-        if sock_st.st_uid != os.geteuid() or stat.S_IMODE(sock_st.st_mode) & 0o077:
+        if not same_owner(sock_st) or stat.S_IMODE(sock_st.st_mode) & 0o077:
             logger.warning("discovery: refusing non-owner-only socket %s", sock)
             return None
         if record.socket_uid != sock_st.st_uid or record.socket_inode != sock_st.st_ino:

@@ -158,14 +158,27 @@ class PeerRuntimeManager:
                     instance_id=record.instance_id,
                 )
                 # Capture the bound socket's UID and inode (REM-105/106).
-                st = socket_path.stat()
+                # POSIX: AF_UNIX socket files expose st_uid/st_ino and the
+                # discovery fence compares them. Windows: named pipes have
+                # no filesystem node (SID/DACL is the authority), so the
+                # stat cannot apply — leave the authority fields unset.
+                socket_uid: int | None = None
+                socket_inode: int | None = None
+                if os.name == "posix":
+                    try:
+                        st = socket_path.stat()
+                        socket_uid = st.st_uid
+                        socket_inode = st.st_ino
+                    except OSError:
+                        socket_uid = None
+                        socket_inode = None
                 import dataclasses
 
                 record = dataclasses.replace(
                     record,
                     socket_path=str(socket_path),
-                    socket_uid=st.st_uid,
-                    socket_inode=st.st_ino,
+                    socket_uid=socket_uid,
+                    socket_inode=socket_inode,
                     protocol=record.protocol or PROTOCOL_ID,
                 )
                 self._selector.register(listener, selectors.EVENT_READ, "listen")

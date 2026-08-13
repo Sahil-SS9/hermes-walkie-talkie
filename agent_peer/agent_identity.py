@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from .errors import ConfigurationError
+from .paths import same_owner
 
 logger = logging.getLogger("agent_peer.agent_identity")
 
@@ -41,7 +42,7 @@ def load_or_create_agent_id(hermes_home: Path) -> str:
         raise ConfigurationError(f"agent identity file must not be a symlink: {path}")
     try:
         st = path.stat()
-        if st.st_uid != os.geteuid() or (st.st_mode & 0o077):
+        if not same_owner(st) or (st.st_mode & 0o077):
             raise ConfigurationError(
                 f"agent identity file must be owner-only: {path}"
             )
