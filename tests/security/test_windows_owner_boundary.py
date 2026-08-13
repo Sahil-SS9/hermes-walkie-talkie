@@ -21,12 +21,37 @@ pytestmark = pytest.mark.skipif(
 
 def test_same_user_success():
     """A listener under the current user's SID accepts the current user."""
+    import threading
+
+    import win32file
+    import win32pipe
+
     from agent_peer.backends.windows import WindowsTransportBackend
 
     backend = WindowsTransportBackend()
     listener = backend.bind_listener(r"C:\logical\owner.sock", instance_id="i")
     try:
-        assert backend.verify_remote_owner(listener._pipe).authenticated is True
+        # Accept a real same-user connection so verify_remote_owner has a
+        # connected client to resolve (GetNamedPipeClientProcessId needs one).
+        def server() -> None:
+            win32pipe.ConnectNamedPipe(listener._pipe, None)
+
+        t = threading.Thread(target=server, daemon=True)
+        t.start()
+        client = win32file.CreateFile(
+            listener.endpoint.address,
+            win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+            0,
+            None,
+            win32file.OPEN_EXISTING,
+            0,
+            None,
+        )
+        try:
+            t.join(timeout=3)
+            assert backend.verify_remote_owner(listener._pipe).authenticated is True
+        finally:
+            client.Close()
     finally:
         listener.close()
 
@@ -107,11 +132,13 @@ def test_teardown_never_touches_replacement():
     logical = r"C:\logical\replacement.sock"
     listener = backend.bind_listener(logical, instance_id="old")
     try:
-        # Simulate a replacement bound to the same logical endpoint.
+        # Simulate a replacement bound to the same logical endpoint: the old
+        # instance must be released first (nMaxInstances=1 -> a second
+        # CreateNamedPipe while the first is open returns ERROR_PIPE_BUSY).
+        listener.close_fd()
         replacement = backend.bind_listener(logical, instance_id="new")
         try:
             # Old teardown must not invalidate the replacement's address.
-            listener.close_fd()
             assert replacement.endpoint.address == listener.endpoint.address
         finally:
             with contextlib.suppress(Exception):

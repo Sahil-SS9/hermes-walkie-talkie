@@ -82,13 +82,37 @@ def test_request_roundtrip():
 
 def test_wrong_user_denied_by_dacl():
     """A process running under a different SID cannot open the pipe."""
+    import threading
+
+    import win32file
+    import win32pipe
+
     backend = WindowsTransportBackend()
     listener = backend.bind_listener(r"C:\logical\secure.sock", instance_id="i")
     try:
-        evidence = backend.verify_remote_owner(listener._pipe)
-        # On the creating process the SID matches.
-        assert evidence.authenticated is True
-        assert evidence.owner
+        # Accept a real same-user connection (GetNamedPipeClientProcessId
+        # requires a connected client) and prove the SID matches.
+        def server() -> None:
+            win32pipe.ConnectNamedPipe(listener._pipe, None)
+
+        t = threading.Thread(target=server, daemon=True)
+        t.start()
+        client = win32file.CreateFile(
+            listener.endpoint.address,
+            win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+            0,
+            None,
+            win32file.OPEN_EXISTING,
+            0,
+            None,
+        )
+        try:
+            t.join(timeout=3)
+            evidence = backend.verify_remote_owner(listener._pipe)
+            assert evidence.authenticated is True
+            assert evidence.owner
+        finally:
+            client.Close()
     finally:
         listener.close()
 
