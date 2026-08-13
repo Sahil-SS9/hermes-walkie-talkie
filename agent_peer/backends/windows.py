@@ -292,22 +292,28 @@ class WindowsTransportBackend:
         return self.request(endpoint, b"PROBE:" + challenge, timeout=timeout)
 
     def bound(self, endpoint: TransportEndpoint, *, timeout: float) -> bool:  # pragma: no cover - native only
-        """Connect-only liveness: a pipe that opens is live (DACL-gated)."""
+        """Connect-only liveness: a pipe that a server is listening on is live.
+
+        Uses WaitNamedPipe instead of CreateFile to avoid the deadlock where
+        CreateFile opens a client connection before ConnectNamedPipe is ready
+        in the listener thread. WaitNamedPipe only checks pipe availability
+        without creating a client handle, so it cannot steal the ConnectNamedPipe
+        slot.
+        """
         ns = self._native()
-        if endpoint.kind != "named-pipe":
+        if endpoint.kind not in ("named-pipe", "windows"):
             return False
+        # Accept either a logical socket path (from _backend_endpoint) or
+        # a full pipe name (from bind_listener). Convert as needed.
+        address = endpoint.address
+        if not address.startswith(_PIPE_PREFIX):
+            address = _pipe_name_for(address)
         try:
-            handle = ns["win32file"].CreateFile(
-                endpoint.address,
-                ns["win32file"].GENERIC_READ | ns["win32file"].GENERIC_WRITE,
-                0,
-                None,
-                ns["win32file"].OPEN_EXISTING,
-                0,
-                None,
-            )
-            handle.Close()
-            return True
+            # WaitNamedPipe returns True if the pipe server is available within
+            # the timeout. It does NOT create a client handle — no ConnectNamedPipe
+            # slot is consumed, no deadlock risk.
+            wait_ms = int(timeout * 1000)
+            return ns["win32pipe"].WaitNamedPipe(address, wait_ms)
         except Exception:
             return False
 

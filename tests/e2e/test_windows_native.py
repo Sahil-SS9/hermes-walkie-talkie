@@ -69,7 +69,37 @@ runtime.shutdown()
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
-        line = proc_b.stdout.readline().strip()
+        # Bounded read: fail fast with diagnostics instead of hanging forever.
+        # Threading works reliably on all platforms (select.select does NOT
+        # work on Windows for non-socket file handles).
+        import threading
+
+        _ready_line: list[str] = []
+        _read_exc: list[Exception] = []
+
+        def _drain_ready():
+            try:
+                line = proc_b.stdout.readline()
+                if line:
+                    _ready_line.append(line)
+            except Exception as exc:
+                _read_exc.append(exc)
+
+        reader = threading.Thread(target=_drain_ready, daemon=True)
+        reader.start()
+        reader.join(timeout=60.0)
+        if _read_exc:
+            raise _read_exc[0]
+        if not _ready_line:
+            # Timeout — kill B and surface its stderr for diagnostics.
+            proc_b.kill()
+            proc_b.wait(timeout=5)
+            b_stderr = proc_b.stderr.read()
+            raise AssertionError(
+                f"Process B did not print its ready line within 60s.\n"
+                f"stderr:\n{b_stderr}"
+            )
+        line = _ready_line[0].strip()
         assert json.loads(line)["ok"] is True
         a_peer = str(uuid.uuid4())
         env_a_root = str(tmp / "runtime-a")

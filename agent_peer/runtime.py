@@ -689,7 +689,8 @@ class PeerRuntimeManager:
         """Wrap a recorded socket path as a backend transport endpoint."""
         from .backends.base import TransportEndpoint
 
-        return TransportEndpoint(kind="unix", address=socket_path)
+        kind = "named-pipe" if self._is_windows else "unix"
+        return TransportEndpoint(kind=kind, address=socket_path)
 
     def _reclaim_stale_socket(self, socket_path: Path) -> None:
         """Crash recovery: remove a stale socket only if nothing listens on it."""
