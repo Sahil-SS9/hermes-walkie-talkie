@@ -8,6 +8,7 @@ with an explicit native-required reason; a Linux pass is NOT Windows evidence
 
 from __future__ import annotations
 
+import contextlib
 import sys
 
 import pytest
@@ -107,9 +108,17 @@ except Exception:
         b.kill()
         b.wait(timeout=5)
         b_stderr = "".join(_b_stderr_chunks)
+        # Read file-based trace (stderr pipe is unreliable for diagnosis)
+        import os as _os
+        import pathlib as _pl
+        _tracefile = _pl.Path(_os.environ.get("TEMP", "/tmp")) / "agent_peer_trace.log"
+        _trace = ""
+        with contextlib.suppress(Exception):
+            _trace = _tracefile.read_text()
         raise AssertionError(
             f"child B did not print ready line within 60s.\n"
-            f"stderr: {b_stderr}"
+            f"stderr: {b_stderr}\n"
+            f"trace: {_trace}"
         )
     ready_b = _ready_b_line[0]
     assert ready_b, f"child B exited before ready; stderr: {b.stderr.read() if b.stderr else ''}"

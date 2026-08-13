@@ -157,13 +157,32 @@ class PeerRuntimeManager:
         """
         with self._lock:
             socket_path = self._paths.socket_path_for(record.peer_id, record.instance_id)
+            # File-based trace (stderr pipe can deadlock on Windows)
+            import os as _os
+            import pathlib as _pl
+            _tracefile = _pl.Path(_os.environ.get("TEMP", "/tmp")) / "agent_peer_trace.log"
+            try:
+                with open(_tracefile, "a") as _tf:
+                    _tf.write(f"register_peer: socket_path={socket_path}\n")
+            except Exception:
+                pass
             self._reclaim_stale_socket(socket_path)
+            try:
+                with open(_tracefile, "a") as _tf:
+                    _tf.write("register_peer: reclaim done\n")
+            except Exception:
+                pass
             listener = None
             try:
                 listener = self._backend.bind_listener(
                     socket_path,
                     instance_id=record.instance_id,
                 )
+                try:
+                    with open(_tracefile, "a") as _tf:
+                        _tf.write("register_peer: bind done\n")
+                except Exception:
+                    pass
                 # Capture the bound socket's UID and inode (REM-105/106).
                 # POSIX: AF_UNIX socket files expose st_uid/st_ino and the
                 # discovery fence compares them. Windows: named pipes have
@@ -192,6 +211,11 @@ class PeerRuntimeManager:
                     # Named pipes: bounded per-listener wait thread (P2).
                     self._start_windows_listener(record.peer_id, listener)
                     self._thread = None  # selector thread unused on Windows
+                    try:
+                        with open(_tracefile, "a") as _tf:
+                            _tf.write("register_peer: windows listener started\n")
+                    except Exception:
+                        pass
                 else:
                     self._selector.register(listener, selectors.EVENT_READ, "listen")
                 self._peers[record.peer_id] = record
@@ -204,7 +228,17 @@ class PeerRuntimeManager:
                         raise RuntimeError("peer supervisor failed to start")
                 # Publication is the final registration step: the listener and
                 # confirmed supervisor are already ready to answer probes.
+                try:
+                    with open(_tracefile, "a") as _tf:
+                        _tf.write("register_peer: calling registry.register\n")
+                except Exception:
+                    pass
                 self._registry.register(record)
+                try:
+                    with open(_tracefile, "a") as _tf:
+                        _tf.write("register_peer: registry done, returning handle\n")
+                except Exception:
+                    pass
                 handle = PeerHandle(
                     peer_id=record.peer_id,
                     socket_path=socket_path,
