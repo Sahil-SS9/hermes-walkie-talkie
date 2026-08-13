@@ -67,10 +67,21 @@ class _WindowsListener:
         raise NotImplementedError("native-only: ConnectNamedPipe")
 
     def close(self) -> None:  # pragma: no cover - native only
-        raise NotImplementedError("native-only: CloseHandle")
+        """Close the named-pipe handle (no unlink — pipes have no FS node)."""
+        try:
+            import win32file
+        except ImportError as exc:  # pragma: no cover
+            raise NotImplementedError(
+                "WindowsTransportBackend requires the optional Windows-only "
+                "dependency `pywin32` (install: uv pip install '.[windows]')"
+            ) from exc
+        if self._pipe is not None:
+            win32file.CloseHandle(self._pipe)
+            self._pipe = None
 
     def close_fd(self) -> None:  # pragma: no cover - native only
-        raise NotImplementedError("native-only: CloseHandle (no unlink)")
+        """Close the handle; named pipes have no filesystem node to unlink."""
+        self.close()
 
 
 class WindowsTransportBackend:
