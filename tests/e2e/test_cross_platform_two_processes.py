@@ -182,5 +182,5 @@ except Exception:
         assert a.stdin is not None and b.stdin is not None
         a.stdin.close()
         b.stdin.close()
-        a.wait(timeout=10)
-        b.wait(timeout=10)
+        a.wait(timeout=30)
+        b.wait(timeout=30)

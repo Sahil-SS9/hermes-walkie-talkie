@@ -304,9 +304,18 @@ class PeerRuntimeManager:
                 self._listener_owners.pop(listener, None)
                 if not self._is_windows:
                     with suppress(Exception):
-                        self._selector.unregister(listener)  # type: ignore[arg-type]
-                listener.close_fd()  # type: ignore[attr-defined]
-            self._stop_windows_listener(peer_id)
+                        self._selector.unregister(listener)  # type: ignore[attr-defined]
+                # On Windows, close the pipe handle FIRST to unblock the
+                # pending synchronous ConnectNamedPipe in the wait thread.
+                # CloseHandle on a handle with a pending synchronous pipe
+                # operation may raise — suppress so the thread join still runs.
+                if self._is_windows:
+                    with suppress(Exception):
+                        listener.close_fd()  # type: ignore[attr-defined]
+                    self._stop_windows_listener(peer_id)
+                else:
+                    listener.close_fd()  # type: ignore[attr-defined]
+                    self._stop_windows_listener(peer_id)
 
             # 4. Close accepted connections belonging to this listener/peer.
             for conn in list(self._connections.keys()):
