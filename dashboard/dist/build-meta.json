@@ -1,0 +1,127 @@
+{
+  "inputs": {
+    "src/api.ts": {
+      "bytes": 3175,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/theme.ts": {
+      "bytes": 3617,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/components/header.ts": {
+      "bytes": 2668,
+      "imports": [
+        {
+          "path": "src/theme.ts",
+          "kind": "import-statement",
+          "original": "../theme"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/components/control-room.ts": {
+      "bytes": 1128,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/components/peer-rail.ts": {
+      "bytes": 1183,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/components/workspace.ts": {
+      "bytes": 1435,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/components/modals.ts": {
+      "bytes": 1213,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/components/speech-to-text.ts": {
+      "bytes": 4192,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/app.ts": {
+      "bytes": 14278,
+      "imports": [
+        {
+          "path": "src/api.ts",
+          "kind": "import-statement",
+          "original": "./api"
+        },
+        {
+          "path": "src/theme.ts",
+          "kind": "import-statement",
+          "original": "./theme"
+        },
+        {
+          "path": "src/components/header.ts",
+          "kind": "import-statement",
+          "original": "./components/header"
+        },
+        {
+          "path": "src/components/control-room.ts",
+          "kind": "import-statement",
+          "original": "./components/control-room"
+        },
+        {
+          "path": "src/components/peer-rail.ts",
+          "kind": "import-statement",
+          "original": "./components/peer-rail"
+        },
+        {
+          "path": "src/components/workspace.ts",
+          "kind": "import-statement",
+          "original": "./components/workspace"
+        },
+        {
+          "path": "src/components/modals.ts",
+          "kind": "import-statement",
+          "original": "./components/modals"
+        },
+        {
+          "path": "src/components/speech-to-text.ts",
+          "kind": "import-statement",
+          "original": "./components/speech-to-text"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/style.css": {
+      "bytes": 13200,
+      "imports": [
+        {
+          "path": "data:image/svg+xml,%3Csvg viewBox='0 0 240 240' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.92' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E",
+          "kind": "url-token",
+          "external": true
+        }
+      ]
+    },
+    "src/index.ts": {
+      "bytes": 1344,
+      "imports": [
+        {
+          "path": "src/app.ts",
+          "kind": "import-statement",
+          "original": "./app"
+        },
+        {
+          "path": "src/style.css",
+          "kind": "import-statement",
+          "original": "./style.css"
+        }
+      ],
+      "format": "esm"
+    }
+  },
+  "bytes": {
+    "js": 18472,
+    "css": 10558
+  },
+  "builtAt": "2026-08-13T18:50:47.148Z"
+}

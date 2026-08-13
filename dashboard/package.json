@@ -1,0 +1,19 @@
+{
+  "name": "hermes-walkie-talkie-dashboard",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Walkie-Talkie Dashboard plugin — compiled frontend assets for the Hermes Dashboard tab.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node build.mjs",
+    "test": "node --experimental-vm-modules --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  },
+  "allowScripts": {
+    "esbuild@0.24.2": true
+  }
+}
