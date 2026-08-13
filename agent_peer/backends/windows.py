@@ -50,6 +50,57 @@ def _pipe_name_for(socket_path: Path | str) -> str:
     return f"{_PIPE_PREFIX}-{digest}"
 
 
+class _WindowsPipeConnection:
+    """Accepted named-pipe connection with a socket-like minimal surface.
+
+    Named pipes have no pollable fd; the runtime drives them from a
+    bounded per-listener wait thread (P2). This wrapper exposes the
+    subset the supervisor needs: recv/send/close/setblocking.
+    """
+
+    def __init__(self, pipe_handle) -> None:
+        self._pipe = pipe_handle
+
+    def fileno(self) -> int:  # pragma: no cover - native only
+        raise NotImplementedError(
+            "named pipes have no pollable fd; the Windows supervisor uses a "
+            "bounded per-listener wait thread (P2 native gate)"
+        )
+
+    def setblocking(self, flag: bool) -> None:  # pragma: no cover - native only
+        # Named pipes are message-mode blocking; nothing to configure.
+        return None
+
+    def recv(self, n: int) -> bytes:  # pragma: no cover - native only
+        if sys.platform != "win32":
+            raise NotImplementedError(
+                "WindowsTransportBackend requires native Windows execution "
+                "(ADR-0005); Linux/macOS must never fabricate Windows evidence"
+            )
+        import win32file
+
+        _, data = win32file.ReadFile(self._pipe, n)
+        return data
+
+    def send(self, data: bytes) -> int:  # pragma: no cover - native only
+        if sys.platform != "win32":
+            raise NotImplementedError(
+                "WindowsTransportBackend requires native Windows execution "
+                "(ADR-0005); Linux/macOS must never fabricate Windows evidence"
+            )
+        import win32file
+
+        win32file.WriteFile(self._pipe, data)
+        return len(data)
+
+    def close(self) -> None:  # pragma: no cover - native only
+        # The listener owns the single-instance pipe handle; the accepted
+        # connection is the same handle, so nothing to close here. Closing
+        # it would double-CloseHandle at listener teardown. The wait loop
+        # returns to accept() after the exchange, which re-arms the pipe.
+        return None
+
+
 class _WindowsListener:
     """Listener handle for a named pipe (DACL-bound at creation)."""
 
@@ -63,8 +114,17 @@ class _WindowsListener:
             "bounded per-listener wait thread (P2 native gate)"
         )
 
-    def accept(self) -> object:  # pragma: no cover - native only
-        raise NotImplementedError("native-only: ConnectNamedPipe")
+    def accept(self) -> _WindowsPipeConnection:  # pragma: no cover - native only
+        """Block on ConnectNamedPipe and return the accepted connection."""
+        if sys.platform != "win32":
+            raise NotImplementedError(
+                "WindowsTransportBackend requires native Windows execution "
+                "(ADR-0005); Linux/macOS must never fabricate Windows evidence"
+            )
+        import win32pipe
+
+        win32pipe.ConnectNamedPipe(self._pipe, None)
+        return _WindowsPipeConnection(self._pipe)
 
     def close(self) -> None:  # pragma: no cover - native only
         """Close the named-pipe handle (no unlink — pipes have no FS node)."""

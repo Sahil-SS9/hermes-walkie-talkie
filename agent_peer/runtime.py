@@ -116,6 +116,11 @@ class PeerRuntimeManager:
         self._listeners: dict[str, object] = {}
         self._listener_owners: dict[object, str] = {}
         self._lock = threading.RLock()
+        # Windows: named pipes have no pollable fd, so the supervisor runs a
+        # bounded per-listener wait thread per peer (P2 native gate) instead
+        # of the POSIX selector. Keyed by peer_id for teardown.
+        self._is_windows = os.name != "posix"
+        self._windows_threads: dict[str, threading.Thread] = {}
         self._wakeup_r, self._wakeup_w = os.pipe()
         self._selector.register(self._wakeup_r, selectors.EVENT_READ, "wakeup")
 
@@ -181,14 +186,20 @@ class PeerRuntimeManager:
                     socket_inode=socket_inode,
                     protocol=record.protocol or PROTOCOL_ID,
                 )
-                self._selector.register(listener, selectors.EVENT_READ, "listen")
+                if self._is_windows:
+                    # Named pipes: bounded per-listener wait thread (P2).
+                    self._start_windows_listener(record.peer_id, listener)
+                    self._thread = None  # selector thread unused on Windows
+                else:
+                    self._selector.register(listener, selectors.EVENT_READ, "listen")
                 self._peers[record.peer_id] = record
                 self._handlers[record.peer_id] = on_message
                 self._listeners[record.peer_id] = listener
                 self._listener_owners[listener] = record.peer_id
-                self._ensure_thread()
-                if self._thread is None or not self._thread.is_alive():
-                    raise RuntimeError("peer supervisor failed to start")
+                if not self._is_windows:
+                    self._ensure_thread()
+                    if self._thread is None or not self._thread.is_alive():
+                        raise RuntimeError("peer supervisor failed to start")
                 # Publication is the final registration step: the listener and
                 # confirmed supervisor are already ready to answer probes.
                 self._registry.register(record)
@@ -202,8 +213,10 @@ class PeerRuntimeManager:
             except Exception:
                 # Close/unregister the listener and leave no record.
                 if listener is not None:
-                    with suppress(Exception):
-                        self._selector.unregister(listener)
+                    if not self._is_windows:
+                        with suppress(Exception):
+                            self._selector.unregister(listener)
+                    self._stop_windows_listener(record.peer_id)
                     listener.close()
                 self._peers.pop(record.peer_id, None)
                 self._handlers.pop(record.peer_id, None)
@@ -279,9 +292,11 @@ class PeerRuntimeManager:
             # UID/inode fence proves the path is still the exact owned one.
             if listener is not None:
                 self._listener_owners.pop(listener, None)
-                with suppress(Exception):
-                    self._selector.unregister(listener)  # type: ignore[arg-type]
+                if not self._is_windows:
+                    with suppress(Exception):
+                        self._selector.unregister(listener)  # type: ignore[arg-type]
                 listener.close_fd()  # type: ignore[attr-defined]
+            self._stop_windows_listener(peer_id)
 
             # 4. Close accepted connections belonging to this listener/peer.
             for conn in list(self._connections.keys()):
@@ -383,6 +398,11 @@ class PeerRuntimeManager:
             peer_ids = list(self._peers.keys())
             for peer_id in peer_ids:
                 self.unregister_peer(peer_id)
+            # Stop any remaining Windows wait threads (unregister_peer
+            # joins the peer's thread; this is belt-and-braces for peers
+            # that were never registered via the normal path).
+            for pid in list(self._windows_threads.keys()):
+                self._stop_windows_listener(pid)
             self._stop_event.set()
             self._wakeup()
             self._join_thread()
@@ -409,6 +429,51 @@ class PeerRuntimeManager:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=3)
+
+    def _start_windows_listener(self, peer_id: str, listener: object) -> None:
+        """Start the bounded per-listener wait thread (P2 native gate).
+
+        Named pipes are not selectable; each listener gets one daemon
+        thread that blocks on ConnectNamedPipe, verifies the client SID
+        and services request/reply frames until the listener is closed.
+        """
+        self._stop_windows_listener(peer_id)
+        t = threading.Thread(
+            target=self._windows_wait_loop,
+            args=(peer_id, listener),
+            name=f"agent-peer-windows-{peer_id[:8]}",
+            daemon=True,
+        )
+        self._windows_threads[peer_id] = t
+        t.start()
+
+    def _stop_windows_listener(self, peer_id: str) -> None:
+        t = self._windows_threads.pop(peer_id, None)
+        if t is not None:
+            t.join(timeout=3)
+
+    def _windows_wait_loop(self, peer_id: str, listener: object) -> None:
+        """Serve one named-pipe listener: accept -> verify -> dispatch."""
+        while not self._stop_event.is_set():
+            try:
+                conn = listener.accept()  # type: ignore[attr-defined]
+            except Exception:
+                return  # listener closed during teardown
+            try:
+                evidence = self._backend.verify_remote_owner(conn._pipe)
+                if not evidence.authenticated:
+                    logger.warning(
+                        "dropping named-pipe connection from foreign owner: %s",
+                        evidence.detail,
+                    )
+                    continue
+                state = _Connection(conn, peer_id)  # type: ignore[arg-type]
+                self._service_connection(conn, state)  # type: ignore[arg-type]
+            except Exception:
+                logger.exception("named-pipe connection error for %s", peer_id)
+            finally:
+                with contextlib.suppress(Exception):
+                    conn.close()  # type: ignore[attr-defined]
 
     def _wakeup(self) -> None:
         with contextlib.suppress(OSError):
@@ -455,12 +520,13 @@ class PeerRuntimeManager:
         self._connections[conn] = _Connection(conn, listener_peer_id)
         self._selector.register(conn, selectors.EVENT_READ, "conn")
 
-    def _service_connection(self, conn: socket.socket) -> None:
-        state = self._connections.get(conn)
+    def _service_connection(self, conn: socket.socket, state: _Connection | None = None) -> None:
+        if state is None:
+            state = self._connections.get(conn)  # type: ignore[arg-type]
         if state is None or state.closed:
             return
         try:
-            chunk = conn.recv(65536)
+            chunk = conn.recv(65536)  # type: ignore[attr-defined]
         except BlockingIOError:
             return
         except OSError:
@@ -574,17 +640,22 @@ class PeerRuntimeManager:
     def _flush(self, conn: socket.socket, state: _Connection) -> None:
         while state.out_buffer:
             try:
-                sent = conn.send(state.out_buffer)
+                sent = conn.send(state.out_buffer)  # type: ignore[attr-defined]
             except BlockingIOError:
+                if self._is_windows:
+                    return  # pipe send is blocking; nothing to reschedule
                 self._selector.modify(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, "conn")
                 return
             except OSError:
                 self._drop_connection(conn)
                 return
             del state.out_buffer[:sent]
-        self._selector.modify(conn, selectors.EVENT_READ, "conn")
+        if not self._is_windows:
+            self._selector.modify(conn, selectors.EVENT_READ, "conn")
 
     def _service_writable(self) -> None:
+        if self._is_windows:
+            return
         for key in list(self._selector.get_map().values()):
             if key.data != "conn":
                 continue
@@ -600,10 +671,11 @@ class PeerRuntimeManager:
         if state is None or state.closed:
             return
         state.closed = True
-        with suppress(Exception):
-            self._selector.unregister(conn)
+        if not self._is_windows:
+            with suppress(Exception):
+                self._selector.unregister(conn)
         with contextlib.suppress(OSError):
-            conn.close()
+            conn.close()  # type: ignore[attr-defined]
 
     def _unbind_socket(self, socket_path: Path) -> None:
         try:
