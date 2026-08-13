@@ -116,6 +116,7 @@ class WindowsTransportBackend:
         try:  # pragma: no cover - native only
             import pywintypes  # noqa: F401
             import win32api
+            import win32con
             import win32file
             import win32pipe
             import win32security
@@ -126,6 +127,7 @@ class WindowsTransportBackend:
             ) from exc
         return {  # pragma: no cover - native only
             "win32api": win32api,
+            "win32con": win32con,
             "win32file": win32file,
             "win32pipe": win32pipe,
             "win32security": win32security,
@@ -259,7 +261,7 @@ class WindowsTransportBackend:
             client_pid = ns["win32pipe"].GetNamedPipeClientProcessId(connection)
             # OpenProcessToken needs a process HANDLE, not a PID.
             process = ns["win32api"].OpenProcess(
-                ns["win32security"].PROCESS_QUERY_INFORMATION,
+                ns["win32con"].PROCESS_QUERY_INFORMATION,
                 False,
                 client_pid,
             )
