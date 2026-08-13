@@ -276,8 +276,24 @@ describe('Modals (source-level)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Peer inspector
+// Deterministic build
 // ---------------------------------------------------------------------------
+
+describe('Deterministic build', () => {
+  it('build.mjs does not write volatile timestamp to build-meta.json', () => {
+    const src = readFileSync(join(__dirname, '..', 'build.mjs'), 'utf-8');
+    assert.ok(!src.includes('new Date()'), 'build.mjs must not use new Date()');
+    assert.ok(!src.includes('.toISOString()'), 'build.mjs must not use toISOString()');
+  });
+
+  it('dist/build-meta.json has no volatile timestamp field', () => {
+    const metaPath = join(DIST_DIR, 'build-meta.json');
+    if (existsSync(metaPath)) {
+      const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+      assert.ok(!('builtAt' in meta), 'build-meta.json must not contain builtAt timestamp');
+    }
+  });
+});
 
 describe('Peer inspector (source-level)', () => {
   it('peer-rail component renders inspector popover', () => {

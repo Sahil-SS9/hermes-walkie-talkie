@@ -15,4 +15,5 @@ export interface AppState {
   activeTab: 'peers' | 'groups' | 'inbox' | 'requests' | 'health';
   activeTheme: string;
   lastUpdated: number | null;
+  selectedPeer: PeerView | null;
 }

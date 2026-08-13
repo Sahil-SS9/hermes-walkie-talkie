@@ -36,7 +36,6 @@ if (isProd) {
   writeFileSync('dist/build-meta.json', JSON.stringify({
     inputs: jsResult.metafile.inputs,
     bytes: { js: jsResult.outputFiles[0].contents.length, css: cssResult.outputFiles[0].contents.length },
-    builtAt: new Date().toISOString(),
   }, null, 2));
 }
 

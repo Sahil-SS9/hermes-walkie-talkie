@@ -602,6 +602,82 @@
   margin-top: 8px;
 }
 
+/* Inspector action buttons */
+.wt-inspect-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.wt-inspect-action {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
+.wt-inspect-action:hover { background: var(--surface); border-color: var(--signal); }
+
+.wt-action-icon { font-size: 13px; }
+
+/* Peer detail surface */
+.wt-peer-detail {
+  padding: 0;
+  outline: none;
+}
+
+.wt-peer-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
+}
+
+.wt-peer-detail-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.wt-peer-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wt-peer-detail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wt-peer-detail-field label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--quiet);
+}
+
+.wt-peer-detail-field code {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 13px;
+  background: var(--surface);
+  padding: 4px 8px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.wt-peer-detail-field span {
+  font-size: 13px;
+}
+
 /* Utility */
 .wt-muted { color: var(--quiet); font-size: 13px; padding: 12px 0; }
 .wt-error { color: var(--danger); font-size: 13px; padding: 12px 0; }

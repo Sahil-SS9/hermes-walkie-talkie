@@ -39,6 +39,7 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
     activeTab: 'peers',
     activeTheme: stored,
     lastUpdated: null,
+    selectedPeer: null,
   };
 
   // Build DOM shell
@@ -160,6 +161,216 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // buildPeerItem — closure over state + updateUI
+  // ---------------------------------------------------------------------------
+
+  function buildPeerItem(peer: PeerView): HTMLElement {
+    const li = document.createElement('li');
+    li.className = 'wt-peer-item';
+    li.setAttribute('data-peer', peer.name || peer.agent_id);
+    li.setAttribute('data-meta', `${peer.surface} · ${peer.status} · ${peer.profile || 'default'}`);
+    li.setAttribute('tabindex', '0');
+    li.setAttribute('role', 'option');
+    li.setAttribute('aria-selected', 'false');
+
+    const avatar = document.createElement('div');
+    avatar.className = 'wt-peer-avatar';
+    avatar.textContent = (peer.name || peer.agent_id).charAt(0).toUpperCase();
+
+    const info = document.createElement('div');
+    info.className = 'wt-peer-info';
+    info.innerHTML = `<b>${escapeHtml(peer.name || peer.agent_id.slice(0, 8))}</b><small>${escapeHtml(peer.surface)} · ${escapeHtml(peer.status)}</small>`;
+
+    const presence = document.createElement('i');
+    presence.className = 'wt-presence';
+    if (peer.status === 'active') presence.classList.add('active');
+
+    li.appendChild(avatar);
+    li.appendChild(info);
+    li.appendChild(presence);
+
+    // Hover inspector — with action buttons and proper cancellation
+    let hideTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function showInspector() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      const inspector = document.getElementById('wt-inspector');
+      if (!inspector) return;
+      const nameEl = document.getElementById('wt-inspect-name');
+      const bodyEl = document.getElementById('wt-inspect-body');
+      if (nameEl) nameEl.textContent = peer.name || peer.agent_id;
+      if (bodyEl) bodyEl.textContent = `${peer.surface} session. ${peer.status}. Profile: ${peer.profile || 'default'}. CWD: ${peer.cwd}`;
+      const rect = li.getBoundingClientRect();
+      inspector.style.left = `${rect.right + 12}px`;
+      inspector.style.top = `${Math.max(86, rect.top - 4)}px`;
+      inspector.classList.add('show');
+
+      // Wire up action buttons
+      const copyBtn = document.getElementById('wt-action-copy');
+      const focusBtn = document.getElementById('wt-action-focus');
+
+      if (copyBtn) {
+        const newCopyBtn = copyBtn.cloneNode(true) as HTMLElement;
+        copyBtn.parentNode!.replaceChild(newCopyBtn, copyBtn);
+        newCopyBtn.onclick = async () => {
+          try {
+            if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+              newCopyBtn.textContent = '⚠ Clipboard unavailable';
+              newCopyBtn.setAttribute('disabled', 'true');
+              setTimeout(() => {
+                newCopyBtn.innerHTML = '<span class="wt-action-icon">📋</span> Copy agent ID';
+                newCopyBtn.removeAttribute('disabled');
+              }, 2000);
+              return;
+            }
+            await navigator.clipboard.writeText(peer.agent_id);
+            newCopyBtn.innerHTML = '<span class="wt-action-icon">✓</span> Copied!';
+            setTimeout(() => {
+              newCopyBtn.innerHTML = '<span class="wt-action-icon">📋</span> Copy agent ID';
+            }, 1500);
+          } catch {
+            newCopyBtn.textContent = '⚠ Copy failed';
+            newCopyBtn.setAttribute('disabled', 'true');
+            setTimeout(() => {
+              newCopyBtn.innerHTML = '<span class="wt-action-icon">📋</span> Copy agent ID';
+              newCopyBtn.removeAttribute('disabled');
+            }, 2000);
+          }
+        };
+      }
+
+      if (focusBtn) {
+        const newFocusBtn = focusBtn.cloneNode(true) as HTMLElement;
+        focusBtn.parentNode!.replaceChild(newFocusBtn, focusBtn);
+        newFocusBtn.onclick = () => {
+          state.selectedPeer = peer;
+          // Update peer item aria-selected states
+          const rail = document.querySelector('.wt-rail');
+          if (rail) {
+            rail.querySelectorAll('.wt-peer-item').forEach((el) => {
+              el.setAttribute('aria-selected', 'false');
+              el.classList.remove('active');
+            });
+          }
+          li.classList.add('active');
+          li.setAttribute('aria-selected', 'true');
+          // Show peer detail surface
+          showPeerDetail(peer);
+          // Switch to peers tab if not already there
+          if (state.activeTab !== 'peers') {
+            state.activeTab = 'peers';
+            updateUI();
+          }
+          inspector.classList.remove('show');
+        };
+      }
+    }
+
+    function hideInspector() {
+      hideTimer = setTimeout(() => {
+        const inspector = document.getElementById('wt-inspector');
+        if (inspector) inspector.classList.remove('show');
+      }, 300);
+    }
+
+    li.addEventListener('mouseenter', showInspector);
+    li.addEventListener('mouseleave', hideInspector);
+
+    // Keyboard: Enter/Space to focus peer
+    li.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        state.selectedPeer = peer;
+        const rail = document.querySelector('.wt-rail');
+        if (rail) {
+          rail.querySelectorAll('.wt-peer-item').forEach((el) => {
+            el.setAttribute('aria-selected', 'false');
+            el.classList.remove('active');
+          });
+        }
+        li.classList.add('active');
+        li.setAttribute('aria-selected', 'true');
+        showPeerDetail(peer);
+        if (state.activeTab !== 'peers') {
+          state.activeTab = 'peers';
+          updateUI();
+        }
+      }
+    });
+
+    // Inspector itself: cancel hide on enter, hide on leave
+    const inspector = document.getElementById('wt-inspector');
+    if (inspector) {
+      inspector.addEventListener('mouseenter', () => {
+        if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      });
+      inspector.addEventListener('mouseleave', () => {
+        inspector.classList.remove('show');
+      });
+    }
+
+    return li;
+  }
+
+  // ---------------------------------------------------------------------------
+  // showPeerDetail — closure over state + updateUI
+  // ---------------------------------------------------------------------------
+
+  function showPeerDetail(peer: PeerView): void {
+    const body = workspace.querySelector('.wt-workspace-body');
+    if (!body) return;
+
+    // Find or create peer detail surface
+    let detail = document.getElementById('wt-peer-detail') as HTMLElement | null;
+    if (!detail) {
+      detail = document.createElement('div');
+      detail.id = 'wt-peer-detail';
+      detail.className = 'wt-peer-detail';
+      detail.setAttribute('tabindex', '-1');
+      detail.setAttribute('role', 'region');
+      detail.setAttribute('aria-label', 'Peer detail');
+    }
+
+    detail.innerHTML = `
+      <div class="wt-peer-detail-header">
+        <h2>${escapeHtml(peer.name || peer.agent_id.slice(0, 12))}</h2>
+        <button class="wt-btn" id="wt-peer-detail-close" aria-label="Close peer detail">✕</button>
+      </div>
+      <div class="wt-peer-detail-body">
+        <div class="wt-peer-detail-field"><label>Agent ID</label><code>${escapeHtml(peer.agent_id)}</code></div>
+        <div class="wt-peer-detail-field"><label>Surface</label><span>${escapeHtml(peer.surface)}</span></div>
+        <div class="wt-peer-detail-field"><label>Status</label><span class="wt-badge wt-badge-${peer.status}">${escapeHtml(peer.status)}</span></div>
+        <div class="wt-peer-detail-field"><label>Profile</label><span>${escapeHtml(peer.profile || 'default')}</span></div>
+        <div class="wt-peer-detail-field"><label>CWD</label><code>${escapeHtml(peer.cwd)}</code></div>
+        <div class="wt-peer-detail-field"><label>Git Branch</label><span>${escapeHtml(peer.git_branch || '—')}</span></div>
+      </div>
+    `;
+
+    // Replace workspace body content with detail
+    body.innerHTML = '';
+    body.appendChild(detail);
+
+    // Focus the detail surface for accessibility
+    detail.focus();
+
+    // Close button
+    const closeBtn = detail.querySelector('#wt-peer-detail-close');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => {
+        state.selectedPeer = null;
+        const rail = document.querySelector('.wt-rail');
+        if (rail) {
+          rail.querySelectorAll('.wt-peer-item').forEach((el) => {
+            el.setAttribute('aria-selected', 'false');
+            el.classList.remove('active');
+          });
+        }
+        updateUI();
+      });
+    }
+  }
+
   // Initial load
   refresh();
 
@@ -167,69 +378,6 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
   window.addEventListener('beforeunload', () => {
     offEvents();
   });
-}
-
-function buildPeerItem(peer: PeerView): HTMLElement {
-  const li = document.createElement('li');
-  li.className = 'wt-peer-item';
-  li.setAttribute('data-peer', peer.name || peer.agent_id);
-  li.setAttribute('data-meta', `${peer.surface} · ${peer.status} · ${peer.profile || 'default'}`);
-
-  const avatar = document.createElement('div');
-  avatar.className = 'wt-peer-avatar';
-  avatar.textContent = (peer.name || peer.agent_id).charAt(0).toUpperCase();
-
-  const info = document.createElement('div');
-  info.className = 'wt-peer-info';
-  info.innerHTML = `<b>${escapeHtml(peer.name || peer.agent_id.slice(0, 8))}</b><small>${escapeHtml(peer.surface)} · ${escapeHtml(peer.status)}</small>`;
-
-  const presence = document.createElement('i');
-  presence.className = 'wt-presence';
-  if (peer.status === 'active') presence.classList.add('active');
-
-  li.appendChild(avatar);
-  li.appendChild(info);
-  li.appendChild(presence);
-
-  // Hover inspector — with action buttons and proper cancellation
-  let hideTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function showInspector() {
-    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-    const inspector = document.getElementById('wt-inspector');
-    if (!inspector) return;
-    const nameEl = document.getElementById('wt-inspect-name');
-    const bodyEl = document.getElementById('wt-inspect-body');
-    if (nameEl) nameEl.textContent = peer.name || peer.agent_id;
-    if (bodyEl) bodyEl.textContent = `${peer.surface} session. ${peer.status}. Profile: ${peer.profile || 'default'}. CWD: ${peer.cwd}`;
-    const rect = li.getBoundingClientRect();
-    inspector.style.left = `${rect.right + 12}px`;
-    inspector.style.top = `${Math.max(86, rect.top - 4)}px`;
-    inspector.classList.add('show');
-  }
-
-  function hideInspector() {
-    hideTimer = setTimeout(() => {
-      const inspector = document.getElementById('wt-inspector');
-      if (inspector) inspector.classList.remove('show');
-    }, 300);
-  }
-
-  li.addEventListener('mouseenter', showInspector);
-  li.addEventListener('mouseleave', hideInspector);
-
-  // Inspector itself: cancel hide on enter, hide on leave
-  const inspector = document.getElementById('wt-inspector');
-  if (inspector) {
-    inspector.addEventListener('mouseenter', () => {
-      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-    });
-    inspector.addEventListener('mouseleave', () => {
-      inspector.classList.remove('show');
-    });
-  }
-
-  return li;
 }
 
 function buildTabContent(state: AppState, api: ReturnType<typeof createApi>): HTMLElement {

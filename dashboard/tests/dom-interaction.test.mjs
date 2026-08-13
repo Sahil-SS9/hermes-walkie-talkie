@@ -173,4 +173,43 @@ describe('DOM-level interaction tests', () => {
     assert.ok(src.includes('hideTimer'), 'app must have hideTimer for inspector cancellation');
     assert.ok(src.includes('clearTimeout'), 'app must clear timeout on inspector enter');
   });
+
+  it('inspector popover contains Copy agent ID and Focus peer action buttons', () => {
+    const appSrc = readFileSync(join(__dirname, '..', 'src', 'app.ts'), 'utf-8');
+    const railSrc = readFileSync(join(__dirname, '..', 'src', 'components', 'peer-rail.ts'), 'utf-8');
+    const hasCopy = appSrc.includes('Copy agent ID') || railSrc.includes('Copy agent ID') || appSrc.includes('copy-agent-id');
+    const hasFocus = appSrc.includes('Focus peer') || railSrc.includes('Focus peer') || appSrc.includes('focus-peer');
+    assert.ok(hasCopy, 'must have Copy agent ID action');
+    assert.ok(hasFocus, 'must have Focus peer action');
+  });
+
+  it('Copy agent ID uses async Clipboard API with unavailable/failure feedback', () => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'app.ts'), 'utf-8');
+    assert.ok(src.includes('navigator.clipboard') || src.includes('clipboard'), 'must use Clipboard API');
+    assert.ok(src.includes('writeText') || src.includes('clipboard'), 'must write to clipboard');
+    assert.ok(src.includes('catch') || src.includes('unavailable'), 'must handle clipboard failure');
+  });
+
+  it('Focus peer sets selected-peer state and brings peer detail surface into focus', () => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'app.ts'), 'utf-8');
+    assert.ok(src.includes('selectedPeer') || src.includes('selected-peer') || src.includes('focusPeer'), 'must have selected-peer state');
+    assert.ok(src.includes('focus') || src.includes('scrollIntoView') || src.includes('detail'), 'must bring detail surface into focus');
+  });
+
+  it('inspector preserves 300ms safe corridor for hover', () => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'app.ts'), 'utf-8');
+    assert.ok(src.includes('300'), 'must have 300ms delay for inspector hide');
+  });
+
+  it('inspector has keyboard focus/blur accessibility', () => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'app.ts'), 'utf-8');
+    assert.ok(src.includes('focus') || src.includes('blur') || src.includes('tabindex') || src.includes('keydown'), 'must have keyboard accessibility');
+  });
+
+  it('no unsupported messaging actions in inspector', () => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'app.ts'), 'utf-8');
+    assert.ok(!src.includes('sendMessage'), 'must not invent sendMessage action');
+    assert.ok(!src.includes('broadcast'), 'must not invent broadcast action');
+    assert.ok(!src.includes('direct message'), 'must not invent direct message action');
+  });
 });

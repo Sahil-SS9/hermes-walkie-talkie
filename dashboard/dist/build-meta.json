@@ -27,7 +27,7 @@
       "format": "esm"
     },
     "src/components/peer-rail.ts": {
-      "bytes": 1183,
+      "bytes": 1964,
       "imports": [],
       "format": "esm"
     },
@@ -47,7 +47,7 @@
       "format": "esm"
     },
     "src/app.ts": {
-      "bytes": 15049,
+      "bytes": 21190,
       "imports": [
         {
           "path": "src/api.ts",
@@ -93,7 +93,7 @@
       "format": "esm"
     },
     "src/style.css": {
-      "bytes": 13200,
+      "bytes": 14532,
       "imports": [
         {
           "path": "data:image/svg+xml,%3Csvg viewBox='0 0 240 240' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.92' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E",
@@ -120,8 +120,7 @@
     }
   },
   "bytes": {
-    "js": 19658,
-    "css": 10558
-  },
-  "builtAt": "2026-08-13T18:59:16.121Z"
+    "js": 23660,
+    "css": 11600
+  }
 }
