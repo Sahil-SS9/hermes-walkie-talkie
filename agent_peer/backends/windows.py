@@ -77,10 +77,19 @@ class _WindowsPipeConnection:
                 "WindowsTransportBackend requires native Windows execution "
                 "(ADR-0005); Linux/macOS must never fabricate Windows evidence"
             )
+        import pywintypes
+        import win32event
         import win32file
 
-        _, data = win32file.ReadFile(self._pipe, n)
-        return data
+        overlapped = pywintypes.OVERLAPPED()
+        overlapped.hEvent = win32event.CreateEvent(None, True, False, None)
+        try:
+            hr, data = win32file.ReadFile(self._pipe, n, overlapped)
+            if hr == win32file.ERROR_IO_PENDING:
+                win32event.WaitForSingleObject(overlapped.hEvent, win32event.INFINITE)
+            return data
+        finally:
+            win32event.CloseHandle(overlapped.hEvent)
 
     def send(self, data: bytes) -> int:  # pragma: no cover - native only
         if sys.platform != "win32":
@@ -88,10 +97,19 @@ class _WindowsPipeConnection:
                 "WindowsTransportBackend requires native Windows execution "
                 "(ADR-0005); Linux/macOS must never fabricate Windows evidence"
             )
+        import pywintypes
+        import win32event
         import win32file
 
-        win32file.WriteFile(self._pipe, data)
-        return len(data)
+        overlapped = pywintypes.OVERLAPPED()
+        overlapped.hEvent = win32event.CreateEvent(None, True, False, None)
+        try:
+            hr, _ = win32file.WriteFile(self._pipe, data, overlapped)
+            if hr == win32file.ERROR_IO_PENDING:
+                win32event.WaitForSingleObject(overlapped.hEvent, win32event.INFINITE)
+            return len(data)
+        finally:
+            win32event.CloseHandle(overlapped.hEvent)
 
     def close(self) -> None:  # pragma: no cover - native only
         # The listener owns the single-instance pipe handle; the accepted
@@ -261,7 +279,7 @@ class WindowsTransportBackend:
             sa.SECURITY_DESCRIPTOR = descriptor
             handle = ns["win32pipe"].CreateNamedPipe(
                 pipe_name,
-                ns["win32pipe"].PIPE_ACCESS_DUPLEX,
+                ns["win32pipe"].PIPE_ACCESS_DUPLEX | ns["win32file"].FILE_FLAG_OVERLAPPED,
                 ns["win32pipe"].PIPE_TYPE_MESSAGE
                 | ns["win32pipe"].PIPE_READMODE_MESSAGE
                 | ns["win32pipe"].PIPE_WAIT,
