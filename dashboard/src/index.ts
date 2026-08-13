@@ -64,6 +64,9 @@ function registerPlugin(sdk: HermesPluginSDK): void {
   };
 
   registry.register('hermes-peer', WalkieTalkieTab);
+
+  // Expose initApp for direct testing (behaviour tests call this directly)
+  (window as any).__wt_initApp = initApp;
 }
 
 // ---------------------------------------------------------------------------

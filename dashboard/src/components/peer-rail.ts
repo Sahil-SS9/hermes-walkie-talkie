@@ -16,14 +16,18 @@ export function renderPeerRail(state: AppState): HTMLElement {
 
   const list = document.createElement('ul');
   list.className = 'wt-peer-list';
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', 'Live peer sessions');
   aside.appendChild(list);
 
   // Peer inspector popover with action buttons
+  // Uses role="dialog" (interactive popover), NOT role="tooltip" (which forbids buttons)
   const inspector = document.createElement('div');
   inspector.className = 'wt-inspector';
   inspector.id = 'wt-inspector';
   inspector.setAttribute('tabindex', '0');
-  inspector.setAttribute('role', 'tooltip');
+  inspector.setAttribute('role', 'dialog');
+  inspector.setAttribute('aria-label', 'Peer inspector');
   inspector.innerHTML = `
     <div class="wt-inspect-name" id="wt-inspect-name"></div>
     <div class="wt-inspect-body" id="wt-inspect-body"></div>
@@ -36,18 +40,10 @@ export function renderPeerRail(state: AppState): HTMLElement {
       </button>
     </div>
   `;
-  inspector.addEventListener('mouseenter', () => {
-    // Keep inspector open when hovering it
-  });
-  inspector.addEventListener('mouseleave', () => {
-    inspector.classList.remove('show');
-  });
-  // Keyboard: hide on Escape
-  inspector.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      inspector.classList.remove('show');
-    }
-  });
+
+  // Inspector listeners are attached ONCE here (not per buildPeerItem).
+  // The mouseenter/mouseleave on the inspector itself are handled in app.ts
+  // at init time, not duplicated here.
   aside.appendChild(inspector);
 
   return aside;

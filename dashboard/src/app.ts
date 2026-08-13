@@ -20,6 +20,33 @@ import { renderWorkspace } from './components/workspace';
 import { renderModals } from './components/modals';
 import { renderSpeechToText } from './components/speech-to-text';
 
+// ---------------------------------------------------------------------------
+// Safe badge class mapper — prevents innerHTML class injection
+// ---------------------------------------------------------------------------
+
+const BADGE_CLASS_MAP: Record<string, string> = {
+  active: 'wt-badge-active',
+  idle: 'wt-badge-idle',
+  held: 'wt-badge-held',
+  pending: 'wt-badge-pending',
+  error: 'wt-badge-error',
+  refused: 'wt-badge-refused',
+  unreachable: 'wt-badge-unreachable',
+  completed: 'wt-badge-completed',
+  delivered: 'wt-badge-delivered',
+};
+
+const BADGE_FALLBACK = 'wt-badge-idle';
+
+function badgeClass(status: string): string {
+  const key = (status || '').toLowerCase().trim();
+  return BADGE_CLASS_MAP[key] || BADGE_FALLBACK;
+}
+
+// ---------------------------------------------------------------------------
+// initApp
+// ---------------------------------------------------------------------------
+
 export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
   const api = createApi(sdk);
 
@@ -93,7 +120,31 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
   const stt = renderSpeechToText();
   shell.appendChild(stt);
 
+  // ---------------------------------------------------------------------------
+  // Inspector listeners — attached ONCE, not per buildPeerItem
+  // ---------------------------------------------------------------------------
+
+  const inspector = document.getElementById('wt-inspector');
+  if (inspector) {
+    // Keep inspector open when hovering it
+    inspector.addEventListener('mouseenter', () => {
+      // The hideTimer is managed by buildPeerItem; this just prevents hide
+    });
+    inspector.addEventListener('mouseleave', () => {
+      inspector.classList.remove('show');
+    });
+    // Keyboard: hide on Escape
+    inspector.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        inspector.classList.remove('show');
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Refresh function
+  // ---------------------------------------------------------------------------
+
   async function refresh(): Promise<void> {
     state.loading = true;
     updateUI();
@@ -124,7 +175,10 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
     refresh();
   });
 
-  // Update UI after state changes
+  // ---------------------------------------------------------------------------
+  // updateUI — respects selectedPeer so focus detail survives tab changes
+  // ---------------------------------------------------------------------------
+
   function updateUI(): void {
     // Update peer rail
     const railList = peerRail.querySelector('.wt-peer-list');
@@ -137,16 +191,21 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
       if (count) count.textContent = String(state.peers.length);
     }
 
-    // Update workspace
+    // Update workspace — if a peer is selected, show detail; otherwise show tab content
     const body = workspace.querySelector('.wt-workspace-body');
     if (body) {
-      body.innerHTML = '';
-      if (state.loading) {
-        body.innerHTML = '<div class="wt-muted">Loading…</div>';
-      } else if (state.error) {
-        body.innerHTML = `<div class="wt-error">${escapeHtml(state.error)}</div>`;
+      if (state.selectedPeer) {
+        // Preserve focused peer detail — do NOT overwrite with tab content
+        showPeerDetail(state.selectedPeer);
       } else {
-        body.appendChild(buildTabContent(state, api));
+        body.innerHTML = '';
+        if (state.loading) {
+          body.innerHTML = '<div class="wt-muted">Loading…</div>';
+        } else if (state.error) {
+          body.innerHTML = `<div class="wt-error">${escapeHtml(state.error)}</div>`;
+        } else {
+          body.appendChild(buildTabContent(state, api));
+        }
       }
     }
 
@@ -195,18 +254,18 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
 
     function showInspector() {
       if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-      const inspector = document.getElementById('wt-inspector');
-      if (!inspector) return;
+      const insp = document.getElementById('wt-inspector');
+      if (!insp) return;
       const nameEl = document.getElementById('wt-inspect-name');
       const bodyEl = document.getElementById('wt-inspect-body');
       if (nameEl) nameEl.textContent = peer.name || peer.agent_id;
       if (bodyEl) bodyEl.textContent = `${peer.surface} session. ${peer.status}. Profile: ${peer.profile || 'default'}. CWD: ${peer.cwd}`;
       const rect = li.getBoundingClientRect();
-      inspector.style.left = `${rect.right + 12}px`;
-      inspector.style.top = `${Math.max(86, rect.top - 4)}px`;
-      inspector.classList.add('show');
+      insp.style.left = `${rect.right + 12}px`;
+      insp.style.top = `${Math.max(86, rect.top - 4)}px`;
+      insp.classList.add('show');
 
-      // Wire up action buttons
+      // Wire up action buttons — use fresh clones to avoid stale closures
       const copyBtn = document.getElementById('wt-action-copy');
       const focusBtn = document.getElementById('wt-action-focus');
 
@@ -244,33 +303,16 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
         const newFocusBtn = focusBtn.cloneNode(true) as HTMLElement;
         focusBtn.parentNode!.replaceChild(newFocusBtn, focusBtn);
         newFocusBtn.onclick = () => {
-          state.selectedPeer = peer;
-          // Update peer item aria-selected states
-          const rail = document.querySelector('.wt-rail');
-          if (rail) {
-            rail.querySelectorAll('.wt-peer-item').forEach((el) => {
-              el.setAttribute('aria-selected', 'false');
-              el.classList.remove('active');
-            });
-          }
-          li.classList.add('active');
-          li.setAttribute('aria-selected', 'true');
-          // Show peer detail surface
-          showPeerDetail(peer);
-          // Switch to peers tab if not already there
-          if (state.activeTab !== 'peers') {
-            state.activeTab = 'peers';
-            updateUI();
-          }
-          inspector.classList.remove('show');
+          focusPeer(peer, li);
+          insp.classList.remove('show');
         };
       }
     }
 
     function hideInspector() {
       hideTimer = setTimeout(() => {
-        const inspector = document.getElementById('wt-inspector');
-        if (inspector) inspector.classList.remove('show');
+        const insp = document.getElementById('wt-inspector');
+        if (insp) insp.classList.remove('show');
       }, 300);
     }
 
@@ -281,40 +323,41 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
     li.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        state.selectedPeer = peer;
-        const rail = document.querySelector('.wt-rail');
-        if (rail) {
-          rail.querySelectorAll('.wt-peer-item').forEach((el) => {
-            el.setAttribute('aria-selected', 'false');
-            el.classList.remove('active');
-          });
-        }
-        li.classList.add('active');
-        li.setAttribute('aria-selected', 'true');
-        showPeerDetail(peer);
-        if (state.activeTab !== 'peers') {
-          state.activeTab = 'peers';
-          updateUI();
-        }
+        focusPeer(peer, li);
       }
     });
-
-    // Inspector itself: cancel hide on enter, hide on leave
-    const inspector = document.getElementById('wt-inspector');
-    if (inspector) {
-      inspector.addEventListener('mouseenter', () => {
-        if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-      });
-      inspector.addEventListener('mouseleave', () => {
-        inspector.classList.remove('show');
-      });
-    }
 
     return li;
   }
 
   // ---------------------------------------------------------------------------
-  // showPeerDetail — closure over state + updateUI
+  // focusPeer — shared by click and keyboard; sets state + updates UI
+  // ---------------------------------------------------------------------------
+
+  function focusPeer(peer: PeerView, li: HTMLElement): void {
+    state.selectedPeer = peer;
+
+    // Update peer item aria-selected states
+    const rail = document.querySelector('.wt-rail');
+    if (rail) {
+      rail.querySelectorAll('.wt-peer-item').forEach((el) => {
+        el.setAttribute('aria-selected', 'false');
+        el.classList.remove('active');
+      });
+    }
+    li.classList.add('active');
+    li.setAttribute('aria-selected', 'true');
+
+    // Switch to peers tab if not already there, then updateUI
+    // updateUI checks state.selectedPeer and preserves the detail
+    if (state.activeTab !== 'peers') {
+      state.activeTab = 'peers';
+    }
+    updateUI();
+  }
+
+  // ---------------------------------------------------------------------------
+  // showPeerDetail — renders the peer detail surface into workspace body
   // ---------------------------------------------------------------------------
 
   function showPeerDetail(peer: PeerView): void {
@@ -340,7 +383,7 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
       <div class="wt-peer-detail-body">
         <div class="wt-peer-detail-field"><label>Agent ID</label><code>${escapeHtml(peer.agent_id)}</code></div>
         <div class="wt-peer-detail-field"><label>Surface</label><span>${escapeHtml(peer.surface)}</span></div>
-        <div class="wt-peer-detail-field"><label>Status</label><span class="wt-badge wt-badge-${peer.status}">${escapeHtml(peer.status)}</span></div>
+        <div class="wt-peer-detail-field"><label>Status</label><span class="wt-badge ${badgeClass(peer.status)}">${escapeHtml(peer.status)}</span></div>
         <div class="wt-peer-detail-field"><label>Profile</label><span>${escapeHtml(peer.profile || 'default')}</span></div>
         <div class="wt-peer-detail-field"><label>CWD</label><code>${escapeHtml(peer.cwd)}</code></div>
         <div class="wt-peer-detail-field"><label>Git Branch</label><span>${escapeHtml(peer.git_branch || '—')}</span></div>
@@ -380,6 +423,10 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Tab content builders
+// ---------------------------------------------------------------------------
+
 function buildTabContent(state: AppState, api: ReturnType<typeof createApi>): HTMLElement {
   const div = document.createElement('div');
   switch (state.activeTab) {
@@ -414,7 +461,7 @@ function buildPeersTab(state: AppState): HTMLElement {
   const tbody = document.createElement('tbody');
   for (const p of state.peers) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td><strong>${escapeHtml(p.name || '—')}</strong></td><td><code>${escapeHtml(p.agent_id.slice(0, 12))}</code></td><td>${escapeHtml(p.surface)}</td><td><span class="wt-badge wt-badge-${p.status}">${escapeHtml(p.status)}</span></td><td>${escapeHtml(p.profile || 'default')}</td><td>${escapeHtml(p.git_branch || '—')}</td>`;
+    tr.innerHTML = `<td><strong>${escapeHtml(p.name || '—')}</strong></td><td><code>${escapeHtml(p.agent_id.slice(0, 12))}</code></td><td>${escapeHtml(p.surface)}</td><td><span class="wt-badge ${badgeClass(p.status)}">${escapeHtml(p.status)}</span></td><td>${escapeHtml(p.profile || 'default')}</td><td>${escapeHtml(p.git_branch || '—')}</td>`;
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
@@ -553,7 +600,7 @@ function openReceiptModal(msg: InboxRowView): void {
   if (!overlay || !title || !body) return;
   title.textContent = `Receipt: ${msg.message_id.slice(0, 12)}`;
   body.innerHTML = `
-    <div class="wt-modal-field"><label>State</label><span class="wt-badge wt-badge-${msg.state}">${escapeHtml(msg.state)}</span></div>
+    <div class="wt-modal-field"><label>State</label><span class="wt-badge ${badgeClass(msg.state)}">${escapeHtml(msg.state)}</span></div>
     <div class="wt-modal-field"><label>Sender</label><span>${escapeHtml(msg.sender_peer_id)}</span></div>
     <div class="wt-modal-field"><label>Content</label><pre>${escapeHtml(msg.content)}</pre></div>
   `;
@@ -567,7 +614,7 @@ function openRequestModal(req: RequestView): void {
   if (!overlay || !title || !body) return;
   title.textContent = `Request: ${req.request_id.slice(0, 12)}`;
   body.innerHTML = `
-    <div class="wt-modal-field"><label>State</label><span class="wt-badge wt-badge-${req.state}">${escapeHtml(req.state)}</span></div>
+    <div class="wt-modal-field"><label>State</label><span class="wt-badge ${badgeClass(req.state)}">${escapeHtml(req.state)}</span></div>
     <div class="wt-modal-field"><label>Sender</label><span>${escapeHtml(req.sender_agent_id)}</span></div>
     <div class="wt-modal-field"><label>Summary</label><p>${escapeHtml(req.summary)}</p></div>
     <div class="wt-modal-field"><label>Created</label><span>${escapeHtml(req.created_at || '—')}</span></div>
