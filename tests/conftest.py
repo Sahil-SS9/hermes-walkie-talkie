@@ -33,7 +33,7 @@ def isolated_runtime(monkeypatch):
     Every test gets its own runtime root so tests never see real peers or
     each other's state.
     """
-    with tempfile.TemporaryDirectory(prefix="agent-peer-test-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="agent-peer-test-", dir="/tmp") as tmp:
         runtime = Path(tmp) / "runtime"
         state = Path(tmp) / "state"
         runtime.mkdir(mode=0o700)
