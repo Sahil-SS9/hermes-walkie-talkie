@@ -1,0 +1,14 @@
+{
+  "name": "hermes-peer",
+  "label": "Hermes Peer",
+  "description": "Same-machine agent messaging: live peers, groups, broadcasts, inbox, structured requests and health.",
+  "icon": "Radio",
+  "version": "0.2.0",
+  "tab": {
+    "path": "/plugins/hermes-peer",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

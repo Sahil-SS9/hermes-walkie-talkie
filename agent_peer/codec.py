@@ -14,7 +14,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from .constants import FRAME_LENGTH_PREFIX_BYTES, MAX_FRAME_BYTES, PROTOCOL_ID
+from .constants import FRAME_LENGTH_PREFIX_BYTES, MAX_FRAME_BYTES, PROTOCOL_ID, PROTOCOL_ID_V2
 from .errors import FrameError, OversizedError, UnsupportedVersionError, ValidationError
 from .models import Envelope, Kind, PeerIdentity, ReceiptState
 
@@ -110,7 +110,7 @@ def decode_envelope(payload: bytes) -> Envelope:
     if not isinstance(data, dict):
         raise FrameError("envelope root must be a JSON object")
     protocol = data.get("protocol")
-    if protocol != PROTOCOL_ID:
+    if protocol not in (PROTOCOL_ID, PROTOCOL_ID_V2):
         raise UnsupportedVersionError(f"unsupported protocol {protocol!r}")
     try:
         return _dict_to_envelope(data)

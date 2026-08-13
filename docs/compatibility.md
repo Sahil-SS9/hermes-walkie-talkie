@@ -51,13 +51,17 @@ for the exact commit) or any later commit with the same signatures.
   entry points documented in ADR-0002.
 - If the host API is unavailable, fail clearly. Never silently degrade.
 
-## Tested matrix (v1 release candidate)
+## Tested matrix (V1.1 release candidate)
 
 | OS | Python | Status |
 |---|---|---|
 | Linux | 3.11, 3.12, 3.13 | Verified locally (release-blocking) |
-| macOS | 3.11–3.13 | CI configured; execution deferred to post-goal remote CI |
-| Windows | — | Explicitly out of scope for v1 |
+| macOS | 3.11–3.13 | GitHub Actions CI verified |
+| Windows | 3.12 | GitHub Actions native named-pipe and SID/DACL suite verified |
+
+Windows V1.1 support is backed by the `native-windows` CI job. The scope of
+that evidence is the transport and owner-boundary gates; Windows wheel-install
+and full Desktop/Electron interaction remain unverified follow-up coverage.
 
 The minimum Hermes commit is recorded in `docs/review/VERIFICATION.md` and
 `docs/review/HANDOFF.md` after the candidate freeze.

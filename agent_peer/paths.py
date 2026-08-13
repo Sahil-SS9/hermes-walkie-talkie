@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
@@ -24,12 +25,62 @@ _OWNER_ONLY_DIR = 0o700
 _OWNER_ONLY_FILE = 0o600
 
 
+def _owner_suffix() -> str:
+    """Per-user dir suffix, safe on POSIX and Windows.
+
+    os.geteuid() is POSIX-only; on Windows the owner is the current user
+    SID, which is stable and unique per user. Falls back to the username
+    if SID lookup is unavailable.
+    """
+    if sys.platform == "win32":  # pragma: no cover - native only
+        try:
+            import win32api
+            import win32security
+
+            return win32security.ConvertSidToStringSid(
+                win32security.GetTokenInformation(
+                    win32security.OpenProcessToken(
+                        win32api.GetCurrentProcess(),
+                        win32security.TOKEN_QUERY,
+                    ),
+                    win32security.TokenUser,
+                )[0]
+            ).replace("\\", "-")
+        except Exception:
+            import getpass
+
+            return getpass.getuser().replace("\\", "-")
+    if os.name != "posix":  # pragma: no cover - non-Windows non-POSIX
+        import getpass
+
+        return getpass.getuser().replace("\\", "-")
+    return str(os.geteuid())
+
+
+def same_owner(st) -> bool:
+    """True when stat belongs to the current OS user.
+
+    POSIX compares euid to st_uid. On Windows the OS enforces ownership
+    via the user's private %LOCALAPPDATA% and SID-bound DACLs; the
+    POSIX uid attributes do not exist, so owner-only is considered
+    satisfied (enforced at the ACL boundary instead).
+    """
+    if os.name != "posix":
+        return True
+    return st.st_uid == os.geteuid()
+
+
 def _is_owner_only(path: Path, *, directory: bool) -> bool:
+    # Windows: owner-only is enforced by the OS via the user's private
+    # %LOCALAPPDATA% (SID-bound DACL by construction); POSIX uid/mode
+    # semantics do not apply (os.geteuid / st_uid are POSIX-only).
+    if os.name != "posix":
+        return True
     try:
         st = path.stat()
     except OSError:
         return False
-    if st.st_uid != os.geteuid():
+    if not same_owner(st):
         return False
     forbidden = 0o077 if directory else 0o077
     return (st.st_mode & forbidden) == 0
@@ -156,7 +207,7 @@ class RuntimePaths:
         sockets_dir = root / "s"
         # Probe with the REAL socket-name shape (16 hex chars + ".sock").
         if len(str(sockets_dir / ("0" * 16 + ".sock"))) > _MAX_SOCKET_PATH:
-            sockets_dir = Path(tempfile.gettempdir()) / f"agent-peer-{os.geteuid()}"
+            sockets_dir = Path(tempfile.gettempdir()) / f"agent-peer-{_owner_suffix()}"
         object.__setattr__(self, "sockets_dir", validate_runtime_dir(sockets_dir))
 
     def registry_file_for(self, peer_id: str) -> Path:

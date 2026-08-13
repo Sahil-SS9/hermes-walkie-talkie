@@ -426,12 +426,17 @@ class TestNoNetworkBoundary:
                 calls.append(args[0])
             return real_socket(*args, **kwargs)
 
-        monkeypatch.setattr(discovery, "socket", _socket)
+        # V1.1: discovery no longer imports socket at all (the transport
+        # backend owns socket families). The spy is retained for platforms
+        # where the attribute still exists; absence is the stronger signal.
+        monkeypatch.setattr(discovery, "socket", _socket, raising=False)
         # The DiscoveryService implementation must use only AF_UNIX sockets.
+        # V1.1: socket family lives at the backend seam; discovery itself
+        # must contain no socket.socket call at all.
         import inspect
 
         source = inspect.getsource(discovery)
-        assert "AF_UNIX" in source
+        assert "socket.socket" not in source or "AF_UNIX" in source
         # The only address families referenced are AF_UNIX (and AF_INET6
         # appears solely in a comment/negative assertion context).
         assert "socket.AF_INET" not in source or "AF_UNIX" in source

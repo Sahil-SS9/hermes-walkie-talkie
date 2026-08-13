@@ -30,21 +30,18 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import secrets
-import socket
 import stat
-import time
 import uuid as uuidlib
-from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .codec import FrameDecoder, encode_envelope, encode_frame
+from .backends.base import TransportEndpoint  # noqa: E402
+from .codec import decode_envelope, encode_envelope
 from .constants import PROTOCOL_ID
 from .errors import AgentPeerError
 from .models import Envelope, Kind, PeerIdentity, PeerRecord
-from .paths import RuntimePaths, select_runtime_dir
+from .paths import RuntimePaths, same_owner, select_runtime_dir
 from .registry import Registry
 
 logger = logging.getLogger("agent_peer.discovery")
@@ -120,7 +117,7 @@ def _parse_record(
             return None
         if not stat.S_ISSOCK(sock_st.st_mode):
             return None
-        if sock_st.st_uid != os.geteuid() or stat.S_IMODE(sock_st.st_mode) & 0o077:
+        if not same_owner(sock_st) or stat.S_IMODE(sock_st.st_mode) & 0o077:
             logger.warning("discovery: refusing non-owner-only socket %s", sock)
             return None
         if record.socket_uid != sock_st.st_uid or record.socket_inode != sock_st.st_ino:
@@ -129,14 +126,22 @@ def _parse_record(
     return record
 
 
-def _probe_once(record: PeerRecord) -> dict | None:
+def _probe_once(record: PeerRecord, backend=None) -> dict | None:
     """Run the DISCOVER/ALIVE challenge against one record's socket.
 
     Returns the verified identity dict (nonce, peer_id, instance_id,
     session_id, protocol, status) or None when the probe fails closed.
     The nonce is generated with ``secrets``, is single-use per probe, and is
     compared exactly against the ALIVE reply.
+
+    ``backend`` is the transport backend (defaults to the platform auto
+    selection); pass an explicit backend in tests to isolate platform
+    behaviour.
     """
+    if backend is None:
+        from .backends import get_transport_backend
+
+        backend = get_transport_backend()
     if not record.socket_path:
         return None
     nonce = secrets.token_hex(16)
@@ -155,66 +160,66 @@ def _probe_once(record: PeerRecord) -> dict | None:
         conversation_id=nonce,
         hop_count=0,
     )
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(_DISCOVER_TIMEOUT)
     try:
-        try:
-            sock.connect(record.socket_path)
-        except (OSError, FileNotFoundError):
-            return None
-        sock.settimeout(_DISCOVER_TIMEOUT)
-        sock.sendall(encode_frame(encode_envelope(request)))
-        decoder = FrameDecoder()
-        deadline = time.monotonic() + _DISCOVER_TIMEOUT
-        while time.monotonic() < deadline:
-            try:
-                chunk = sock.recv(4096)
-            except TimeoutError:
-                return None
-            except OSError:
-                return None
-            if not chunk:
-                return None
-            for reply in decoder.feed(chunk):
-                if reply.kind is not Kind.ALIVE:
-                    return None
-                if reply.conversation_id != nonce or reply.sender.peer_id != record.peer_id:
-                    return None
-                try:
-                    identity = json.loads(reply.content)
-                except json.JSONDecodeError:
-                    return None
-                if not isinstance(identity, dict):
-                    return None
-                # Exact nonce comparison.
-                if identity.get("nonce") != nonce:
-                    return None
-                # Exact identity comparison.
-                if identity.get("peer_id") != record.peer_id:
-                    return None
-                if identity.get("instance_id") != record.instance_id:
-                    return None
-                if identity.get("session_id") != record.session_id:
-                    return None
-                if identity.get("protocol") != record.protocol:
-                    return None
-                if identity.get("status") != record.status:
-                    return None
-                return identity
-        return None
+        payload = encode_envelope(request).encode("utf-8")
+        reply_payload = backend.request(
+            TransportEndpoint(kind="unix", address=record.socket_path),
+            payload,
+            timeout=_DISCOVER_TIMEOUT,
+        )
+        reply = decode_envelope(reply_payload)
     except (OSError, AgentPeerError):
         return None
-    finally:
-        with suppress(OSError):
-            sock.close()
+    if reply.kind is not Kind.ALIVE:
+        return None
+    if reply.conversation_id != nonce or reply.sender.peer_id != record.peer_id:
+        return None
+    try:
+        identity = json.loads(reply.content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(identity, dict):
+        return None
+    # Exact nonce comparison.
+    if identity.get("nonce") != nonce:
+        return None
+    # Exact identity comparison.
+    if identity.get("peer_id") != record.peer_id:
+        return None
+    if identity.get("instance_id") != record.instance_id:
+        return None
+    if identity.get("session_id") != record.session_id:
+        return None
+    # V2 fields: when the record advertises them, the ALIVE reply must match
+    # exactly; absent fields (V1 peers) are tolerated on both sides.
+    if identity.get("agent_id") != record.agent_id:
+        return None
+    if tuple(identity.get("protocols") or ()) != record.protocols:
+        return None
+    if identity.get("protocol") != record.protocol:
+        return None
+    if identity.get("status") != record.status:
+        return None
+    return identity
 
 
 class DiscoveryService:
     """Read-only cross-process discovery over the shared runtime root."""
 
-    def __init__(self, runtime_root: Path | RuntimePaths | None = None, registry: Registry | None = None) -> None:
+    def __init__(
+        self,
+        runtime_root: Path | RuntimePaths | None = None,
+        registry: Registry | None = None,
+        backend=None,
+        path_backend=None,
+    ) -> None:
+        from .backends import get_transport_backend
+        from .platform_paths import get_path_backend
+
         self._paths = runtime_root if isinstance(runtime_root, RuntimePaths) else RuntimePaths(runtime_root or select_runtime_dir())
         self._registry = registry or Registry(self._paths)
+        self._backend = backend or get_transport_backend()
+        self._path_backend = path_backend or get_path_backend()
 
     # -- listing ---------------------------------------------------------
 
@@ -323,7 +328,66 @@ class DiscoveryService:
         }
 
     def _probe(self, record: PeerRecord) -> bool:
-        return _probe_once(record) is not None
+        return _probe_once(record, backend=self._backend) is not None
+
+    # -- deterministic agent -> peer resolution (P3.7, G2.5) ----------------
+
+    def resolve_agent(
+        self,
+        agent_id: str,
+        *,
+        pinned_peer_id: str | None = None,
+        requesting_peer_id: str | None = None,
+    ) -> PeerRecord:
+        """Resolve an agent target to exactly one live session (G2.5).
+
+        Order:
+        1. pinned live ``peer_id`` -> that session;
+        2. exactly one explicitly primary session -> that session;
+        3. exactly one live session -> that session;
+        4. else -> raise :class:`AmbiguousPeer` (never broadcast to all).
+
+        A record with an empty ``agent_id`` is V1-only and never resolvable by
+        agent. Raises ``DiscoveryError`` subclasses; never picks the first
+        match on ambiguity (G2.6).
+        """
+        if not agent_id:
+            raise DiscoveryError("empty agent_id")
+        excluded = set()
+        if requesting_peer_id:
+            excluded.add(requesting_peer_id)
+        candidates = [
+            r
+            for r in self._registry.list_peers()
+            if r.agent_id == agent_id and r.peer_id not in excluded
+        ]
+        live = [r for r in candidates if self._probe(r)]
+        if not live:
+            raise DiscoveryError(f"no live session for agent {agent_id!r}")
+
+        # 1. Pinned live peer_id wins when it is one of the live sessions.
+        if pinned_peer_id:
+            pinned = [r for r in live if r.peer_id == pinned_peer_id]
+            if len(pinned) == 1:
+                return pinned[0]
+            raise AmbiguousPeer(
+                f"pinned peer {pinned_peer_id!r} is not a live session of agent {agent_id!r}"
+            )
+
+        # 2. Exactly one explicitly primary session wins.
+        primaries = [r for r in live if r.capabilities.get("primary") is True]
+        if len(primaries) == 1:
+            return primaries[0]
+
+        # 3. Exactly one live session wins.
+        if len(live) == 1:
+            return live[0]
+
+        # 4. Ambiguous: fail closed, no delivery.
+        raise AmbiguousPeer(
+            f"agent {agent_id!r} has {len(live)} live sessions; "
+            "pin a peer_id or mark one session primary"
+        )
 
     # -- separate race-safe stale repair (REM-111) ------------------------
 
@@ -390,7 +454,10 @@ class DiscoveryService:
         # listener remains bound to it. Even when the record's identity probe
         # fails (e.g. forged instance), if the socket path still accepts a
         # connection, a genuine peer is bound there — refuse cleanup entirely.
-        if sock_path is not None and sock_path.exists() and _socket_bound(sock_path):
+        if sock_path is not None and sock_path.exists() and self._backend.bound(
+            TransportEndpoint(kind="unix", address=str(sock_path)),
+            timeout=_DISCOVER_TIMEOUT,
+        ):
             logger.warning("discovery: repair refused (live listener on %s) for %s", sock_path, record.peer_id)
             return
         # Fence passed: unlink the exact stale record (and socket if present).
@@ -409,17 +476,18 @@ class DiscoveryService:
 
 
 def _socket_bound(path: Path) -> bool:
-    """True when a live listener is bound at *path* (accepts connections)."""
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(_DISCOVER_TIMEOUT)
-    try:
-        s.connect(str(path))
-        return True
-    except OSError:
-        return False
-    finally:
-        with suppress(OSError):
-            s.close()
+    """True when a live listener is bound at *path* (accepts connections).
+
+    Backend-delegating shim retained for V1 module-surface compatibility;
+    production callers use ``DiscoveryService._backend.bound`` directly.
+    """
+    from .backends import get_transport_backend
+
+    backend = get_transport_backend()
+    return backend.bound(
+        TransportEndpoint(kind="unix", address=str(path)),
+        timeout=_DISCOVER_TIMEOUT,
+    )
 
 
 def _looks_like_uuid(value: str) -> bool:

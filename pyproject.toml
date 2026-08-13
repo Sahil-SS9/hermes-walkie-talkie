@@ -24,6 +24,13 @@ classifiers = [
 # inside a Hermes process, so no dependency is declared here.
 dependencies = []
 
+[project.optional-dependencies]
+# Native Windows named-pipe backend (ADR-0005 Candidate 2): explicit
+# SID-bound DACL. Only needed on Windows; Linux/macOS remain dependency-light.
+windows = ["pywin32==310; sys_platform == 'win32'"]
+# Dashboard plugin API (FastAPI router mounted by the Hermes Desktop host).
+dashboard = ["fastapi==0.115.6"]
+
 [project.entry-points."hermes_agent.plugins"]
 hermes-peer = "hermes_peer.plugin:register"
 
@@ -32,11 +39,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["agent_peer", "hermes_peer"]
+packages = ["agent_peer", "agent_peer.backends", "hermes_peer", "dashboard"]
 
 [tool.setuptools.package-data]
-hermes_peer = ["../plugin.yaml"]
+hermes_peer = ["../plugin.yaml", "assets/desktop/*.js", "assets/desktop/*.css"]
 agent_peer = ["py.typed"]
+dashboard = ["manifest.json", "plugin_api.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -64,4 +72,10 @@ dev = [
     "pytest-cov==6.2.1",
     "ruff==0.12.10",
     "ty==0.0.2",
+    # Dashboard plugin tests exercise the FastAPI router (runtime gets it
+    # from the Hermes core host).
+    "fastapi==0.115.6",
+    "httpx==0.27.2",
+    "pytest-asyncio==0.24.0",
+    "websockets==14.1",
 ]

@@ -55,6 +55,23 @@ class TestRegistryAtomicWrites:
         assert len(peers) == 1
         assert peers[0].name == "second"
 
+    def test_windows_registry_read_ignores_posix_mode_bits(self, registry_dir, monkeypatch):
+        """Windows ownership is enforced by the DACL, not POSIX mode bits."""
+        reg = Registry(registry_dir)
+        rec = _record()
+        reg.register(rec)
+        record_file = registry_dir / "registry" / f"{rec.peer_id}.json"
+        record_file.chmod(0o666)
+
+        # Simulate Windows after setup: ``same_owner`` already bypasses UID
+        # checks there, so this isolates the registry's stale POSIX-mode gate.
+        monkeypatch.setattr("agent_peer.registry.os.name", "nt")
+
+        found = reg.get(rec.peer_id)
+        assert found is not None
+        assert found.peer_id == rec.peer_id
+        assert found.instance_id == rec.instance_id
+
     def test_unregister_removes_only_own_file(self, registry_dir):
         reg = Registry(registry_dir)
         a, b = _record(), _record()

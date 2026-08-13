@@ -47,7 +47,7 @@ class TestEnvelopeValidation:
     @pytest.mark.parametrize(
         "field,value",
         [
-            ("protocol", "agent-peer/2"),
+            ("protocol", "agent-peer/3"),
             ("protocol", "other/1"),
             ("message_id", "not-a-uuid"),
             ("created_at", "2026-08-09T12:00:00Z"),  # str, not datetime

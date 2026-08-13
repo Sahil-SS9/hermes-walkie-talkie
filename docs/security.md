@@ -1,7 +1,7 @@
 # Security model
 
 Peer messaging is a new trust boundary. This document states the threat
-model, the enforced controls and the non-goals for v1.
+model, the enforced controls and the non-goals for V1/V1.1.
 
 ## Same-user boundary
 
@@ -9,13 +9,16 @@ model, the enforced controls and the non-goals for v1.
   shared only under one OS user.
 - Linux connections are verified same-UID via `SO_PEERCRED`; wrong-UID peers
   are dropped. On platforms without `SO_PEERCRED` (macOS), the owner-verified
-  runtime directory is the boundary.
+  runtime directory is the boundary. Windows uses SID-bound DACLs
+  (owner-only; wrong-user denied at the OS boundary).
 - Symlinked or wrong-owner runtime paths are refused, including the XDG root
   itself and intermediate directories created under permissive umasks.
 - The registry never trusts a PID alone: identity requires the matching
   `instance_id` (socket handshake). Stale entries are removed only after
   expiry **and** a failed handshake — never while another live instance's
   files could be affected.
+- `agent_id` is a stable per-profile UUID persisted owner-only under
+  HERMES_HOME; it is never inferred from alias or path text (G2.3).
 
 ## Untrusted peer input
 
@@ -28,6 +31,14 @@ model, the enforced controls and the non-goals for v1.
   gateway `non_control` gate; verified by the inert-control tests).
 - A peer message never carries executable payloads: JSON only, no
   deserialisation of objects (no pickle, no `__class__` handling).
+- Requests arrive as inert `<peer_request>` conversational text — never a
+  host command; cancellation is advisory with no interrupt seam and no
+  command authority (G4.6, `test_request_inert_control.py`).
+- Broadcast fan-out is bounded (hard ceiling 64) and child IDs are
+  deterministic; concurrent duplicate broadcasters converge on exactly one
+  child per recipient (atomic `created→in_flight` gate).
+- Desktop plugin install is explicit only (G6.9): plugin load never writes
+  to HERMES_HOME; `hermes peer desktop install` is the sole installer.
 
 ## Liveness probe boundary
 
@@ -58,6 +69,12 @@ packet's DEVIATIONS.md for the exact scope.
 - Pending inbox capacity: 100 per peer.
 - TTL 5 minutes; hop cap 4; duplicate message IDs deliver once.
 - Retention cleanup is batched and never blocks active delivery.
+- Group member cap: default 32, hard 128.
+- Broadcast fan-out concurrency: default 8, hard 64.
+- Metrics/events are content-free by structural gate: no message body ever
+  reaches metrics or the event stream.
+- Event broker clients capped (default 256); slow consumers are dropped, the
+  broker stays available.
 
 ## Failure modes are observable
 
@@ -80,9 +97,14 @@ packet's DEVIATIONS.md for the exact scope.
 - Logs carry message IDs, sender IDs, sizes and outcomes — never raw message
   bodies (static audit + review).
 
-## Non-goals (v1)
+## Non-goals (V1/V1.1)
 
 - No cross-machine networking, no encryption in transit (same-user local
-  sockets only), no authentication beyond the OS-user boundary, no broadcast,
-  no file transfer, no remote execution. Any future remote transport must be
+  sockets only), no authentication beyond the OS-user boundary, no file
+  transfer, no remote execution. Any future remote transport must be
   a separate adapter with explicit authentication/encryption, off by default.
+- No nested groups (membership is a flat agent_id set).
+- Cancellation is advisory — no interrupt seam exists by design.
+- Native Windows CI verifies named-pipe transport and the SID/DACL owner
+  boundary. A Windows wheel-install smoke and full Desktop/Electron
+  interaction remain separate follow-up coverage.

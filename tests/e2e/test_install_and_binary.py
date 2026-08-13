@@ -58,15 +58,22 @@ class TestCleanInstall:
         )
         assert "hermes-peer" in proc2.stdout and "enabled" in proc2.stdout
 
-        # Uninstall: remove from enabled and delete the plugin dir.
+        # Uninstall: disable the plugin in this temporary home and delete its
+        # clone. A developer machine may also expose hermes-peer as an
+        # entry-point plugin, so verify this home has it disabled.
         (home / "config.yaml").write_text("plugins:\n  enabled: []\n", encoding="utf-8")
         shutil.rmtree(plugin_dir)
+        list_cmd = [str(HERMES_BIN), "plugins", "list", "--plain", "--no-bundled"]
         proc3 = subprocess.run(
-            [str(HERMES_BIN), "plugins", "list"],
+            list_cmd,
             env=_hermes_env(home), capture_output=True, text=True, timeout=120,
         )
-        assert proc3.returncode == 0
-        assert "hermes-peer" not in proc3.stdout
+        assert proc3.returncode == 0, proc3.stderr
+        assert not plugin_dir.exists()
+        peer_rows = [line.split() for line in proc3.stdout.splitlines() if line.rstrip().endswith("hermes-peer")]
+        # A clean install has no row. A developer environment may still expose
+        # the package as an entry point, but this temporary home must not enable it.
+        assert not peer_rows or peer_rows[0][:2] == ["not", "enabled"], proc3.stdout
 
 
 class TestRealBinarySmoke:

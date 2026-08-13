@@ -10,6 +10,10 @@ from __future__ import annotations
 PROTOCOL_NAME = "agent-peer"
 PROTOCOL_VERSION = 1
 PROTOCOL_ID = f"{PROTOCOL_NAME}/{PROTOCOL_VERSION}"
+# V2: stable agent identity, capability advertisement, groups, workflows.
+PROTOCOL_VERSION_2 = 2
+PROTOCOL_ID_V2 = f"{PROTOCOL_NAME}/{PROTOCOL_VERSION_2}"
+SUPPORTED_PROTOCOLS = (PROTOCOL_ID, PROTOCOL_ID_V2)
 
 # Hard ceilings (bytes)
 MAX_CONTENT_BYTES = 32 * 1024          # 32 KiB UTF-8 content ceiling
@@ -36,3 +40,10 @@ INBOX_CAPACITY = 100                    # pending messages per peer
 
 # Policy
 DEFAULT_INBOUND_POLICY = "accept"       # accept | hold | refuse
+
+# Groups and broadcasts (P4, ADR-0004)
+DEFAULT_GROUP_CAP = 32                  # default max resolved recipients
+HARD_GROUP_CAP = 128                    # hard ceiling
+DEFAULT_FANOUT_CONCURRENCY = 8
+BROADCAST_TTL_SECONDS = 300
+BROADCAST_MAX_RETRIES = 2

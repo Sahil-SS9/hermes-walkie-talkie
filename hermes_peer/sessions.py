@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC
 from pathlib import Path
 
 from agent_peer.discovery import DiscoveryService
@@ -45,9 +46,27 @@ logger = logging.getLogger("hermes_peer.sessions")
 def _surface_of(platform: str | None) -> str:
     if not platform or platform in ("", "cli"):
         return "cli"
-    if platform in ("tui", "webui", "desktop", "dashboard"):
+    if platform in ("desktop",):
+        return "desktop"
+    if platform in ("tui", "webui", "dashboard"):
         return "tui"
     return "gateway"
+
+
+def _hermes_home(ctx) -> Path | None:
+    """Resolve the live profile's HERMES_HOME (G2.3).
+
+    Preference: the plugin context's ``hermes_home`` when present, then the
+    ``HERMES_HOME`` env var. Returns ``None`` when neither is known — the
+    caller must NOT guess ``~/.hermes`` (tests would mutate the real profile).
+    """
+    for candidate in (
+        getattr(ctx, "hermes_home", None),
+        os.environ.get("HERMES_HOME"),
+    ):
+        if candidate:
+            return Path(candidate)
+    return None
 
 
 def host_target_for(surface: str, session_id: str) -> str:
@@ -73,6 +92,37 @@ class PeerSessionManager:
         self._peer_handles: dict[str, PeerHandle] = {}
         self._policy = PolicyEngine(policy=self._config.inbound)
         self._session_policies: dict[str, Policy] = {}  # peer_id -> session-scoped policy
+        self._agent_id_cache: str | None = None
+        # P6 observability: content-free metrics + bounded local events.
+        from agent_peer.events import EventBroker
+        from agent_peer.metrics import MetricsRegistry
+
+        self._metrics = MetricsRegistry()
+        self._events = EventBroker()
+
+    # ------------------------------------------------------------------
+    # V2 stable identity (G2.3, P3.2)
+    # ------------------------------------------------------------------
+
+    def _agent_id(self) -> str:
+        """The profile's long-lived agent identity (G2.3).
+
+        Persisted owner-only inside the REAL HERMES_HOME when one is known
+        (plugin context or ``HERMES_HOME`` env). When no home is resolvable
+        (bare test contexts), an ephemeral UUID is used and NEVER written to
+        the user's home directory — tests must not mutate the real profile.
+        """
+        if self._agent_id_cache is None:
+            home = _hermes_home(self._ctx)
+            if home is None:
+                import uuid as _uuid
+
+                self._agent_id_cache = str(_uuid.uuid4())
+            else:
+                from agent_peer.agent_identity import load_or_create_agent_id
+
+                self._agent_id_cache = load_or_create_agent_id(home)
+        return self._agent_id_cache
 
     # ------------------------------------------------------------------
     # Lifecycle hooks (fired by Hermes with explicit kwargs — never
@@ -102,6 +152,9 @@ class PeerSessionManager:
             session_id=session_id,
             name=alias,
             profile=kwargs.get("profile", ""),
+            agent_id=self._agent_id(),
+            protocols=self._config.protocols,
+            capabilities=self._config.capabilities,
             surface=surface,
             host_target=host_target_for(surface, session_id),
             pid=meta["pid"],
@@ -248,6 +301,23 @@ class PeerSessionManager:
             raise ValueError(f"no active peer for session {session_id!r}")
         return rec
 
+    def resolve_session(self, session_id: str | None = None) -> PeerRecord:
+        """Public session-selection seam (RISKY-2).
+
+        Returns the exact session when ``session_id`` is supplied, or the
+        single active session when unambiguous, or raises ValueError when
+        multiple sessions are active and no explicit id is given. The
+        Dashboard must call this instead of reading ``_peers`` directly.
+        """
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            elif not self._peers:
+                raise ValueError("no active session")
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        return self._require_session(session_id)
+
     def set_alias(self, name: str, session_id: str | None = None) -> None:
         """Persist an alias for the exact invoking session (F-03/REM-205)."""
         # Backwards-compatible single-session fallback: when exactly one
@@ -349,7 +419,9 @@ class PeerSessionManager:
         claim_row = {**base_row, "state": ReceiptState.QUEUED.value}
         existing, created = self._store.claim(claim_row)
         if not created and existing is not None:
-            return ReceiptState(existing["state"])
+            state = ReceiptState(existing["state"])
+            self._record_inbound_metrics(state, delivered=False)
+            return state
 
         engine = self._policy_engine_for(envelope.recipient_peer_id)
         engine.register_pending(envelope.recipient_peer_id, self._store.count_pending(envelope.recipient_peer_id))
@@ -358,6 +430,7 @@ class PeerSessionManager:
 
         if decision.action == "drop":
             self._store.transition(envelope.message_id, state)
+            self._record_inbound_metrics(decision.state, delivered=False)
             return decision.state
 
         if decision.action == "refuse":
@@ -370,10 +443,13 @@ class PeerSessionManager:
                     ("", envelope.message_id),
                 )
                 self._store._conn.commit()
+            self._record_inbound_metrics(ReceiptState.REFUSED, delivered=False)
             return ReceiptState.REFUSED
 
         if decision.action == "hold":
             self._store.transition(envelope.message_id, ReceiptState.HELD)
+            self._metrics.record_held(self._store.count_pending(envelope.recipient_peer_id))
+            self._record_inbound_metrics(ReceiptState.HELD, delivered=False)
             return ReceiptState.HELD
 
         # accept: forward to the harness; queued only after host acceptance.
@@ -382,8 +458,16 @@ class PeerSessionManager:
         accepted = DeliveryAdapter(self._ctx, self).deliver(envelope, force=True)
         if not accepted:
             self._store.transition(envelope.message_id, ReceiptState.HELD)
+            self._metrics.record_held(self._store.count_pending(envelope.recipient_peer_id))
+            self._record_inbound_metrics(ReceiptState.HELD, delivered=False)
             return ReceiptState.HELD
+        self._record_inbound_metrics(ReceiptState.QUEUED, delivered=True)
         return ReceiptState.QUEUED
+
+    def _record_inbound_metrics(self, state: ReceiptState, *, delivered: bool) -> None:
+        """Content-free metrics + bounded local event for one inbound (P6)."""
+        self._metrics.record_delivery(sent=delivered, reason="" if delivered else state.value)
+        self._events.publish("message", state=state.value, delivered=delivered)
 
     # ------------------------------------------------------------------
     # Outbound + inbox operations used by tools/commands (P8)
@@ -403,6 +487,16 @@ class PeerSessionManager:
             else:
                 raise ValueError("no session_id supplied and multiple sessions active")
         rec = self._require_session(session_id)
+        return self._store.pending_for(rec.peer_id)
+
+    def session_inbox(self, session_id: str | None = None) -> list[dict]:
+        """Public session-scoped inbox query (RISKY-3).
+
+        Thin wrapper over read_inbox that uses the explicit session
+        selection seam; the Dashboard calls this instead of reaching into
+        ``_peers``.
+        """
+        rec = self.resolve_session(session_id)
         return self._store.pending_for(rec.peer_id)
 
     def release_message(self, message_id: str, session_id: str | None = None) -> bool:
@@ -480,18 +574,405 @@ class PeerSessionManager:
                 if rec.peer_id == peer_id:
                     self._peers[session_id] = renamed
 
+    # ------------------------------------------------------------------
+    # Structured request/reply workflows (P5, G4)
+    # ------------------------------------------------------------------
+
+    def _request_store(self):
+        from agent_peer.requests import RequestStore
+
+        if getattr(self, "_requests", None) is None:
+            self._requests = RequestStore(self._store)
+        return self._requests
+
+    def create_request(
+        self,
+        recipient_agent_id: str,
+        summary: str,
+        *,
+        payload: dict | None = None,
+        deadline: str | None = None,
+        idempotency_key: str = "",
+        session_id: str | None = None,
+    ) -> dict:
+        """Create + enqueue a structured request to one agent (G4).
+
+        The request is persisted, transitioned to queued, and delivered to
+        the recipient as inert conversational input (``<peer_request>``).
+        The immediate transport result is separate from workflow state (G4.4).
+        """
+        from datetime import datetime, timedelta
+
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        sender_rec = self._require_session(session_id)
+        sender_agent = sender_rec.agent_id or sender_rec.peer_id
+        if not deadline:
+            deadline = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
+        store = self._request_store()
+        request = store.create(
+            sender_agent_id=sender_agent,
+            recipient_agent_id=recipient_agent_id,
+            summary=summary,
+            deadline=deadline,
+            idempotency_key=idempotency_key,
+            payload=payload,
+        )
+        # Enqueue (created -> queued).
+        store.transition(request.request_id, "queued")
+        # Deliver as inert conversational input to the recipient agent's
+        # primary live session. Failure to deliver does NOT roll back the
+        # workflow state — the request stays queued for bounded polling.
+        from .delivery import peer_request_marker
+
+        recipient = self._discovery.resolve_agent(recipient_agent_id)
+        delivered = False
+        if recipient is not None:
+            wrapped = peer_request_marker(
+                request.summary,
+                sender_name=sender_rec.name or "peer",
+                sender_agent_id=sender_agent,
+                request_id=request.request_id,
+                summary=request.summary,
+            )
+            env = self._make_envelope(
+                recipient=recipient.peer_id,
+                content=wrapped,
+                session_id=session_id,
+            )
+            receipt = self._runtime.send(env)
+            delivered = receipt.state in (ReceiptState.QUEUED, ReceiptState.HELD)
+        return {
+            "request_id": request.request_id,
+            "state": request.state,
+            "delivered": delivered,
+            "recipient_agent_id": recipient_agent_id,
+        }
+
+    def request_status(self, request_id: str, *, session_id: str | None = None) -> dict:
+        store = self._request_store()
+        request = store.get(request_id)
+        if request is None:
+            raise ValueError(f"unknown request {request_id}")
+        events = [
+            {"state": e.state, "detail": e.detail, "occurred_at": e.occurred_at}
+            for e in store.events(request_id)
+        ]
+        return {
+            "request_id": request.request_id,
+            "state": request.state,
+            "summary": request.summary,
+            "sender_agent_id": request.sender_agent_id,
+            "recipient_agent_id": request.recipient_agent_id,
+            "created_at": request.created_at,
+            "deadline": request.deadline,
+            "events": events,
+        }
+
+    def session_requests(self, session_id: str | None = None) -> list[dict]:
+        """Public session-scoped request list (RISKY-3).
+
+        Requests addressed to the EXACT session's agent. Uses the explicit
+        session selection seam so the Dashboard never picks the first
+        active session implicitly.
+        """
+        rec = self.resolve_session(session_id)
+        my_agent = rec.agent_id or rec.peer_id
+        store = self._request_store()
+        return [
+            {
+                "request_id": r.request_id,
+                "sender_agent_id": r.sender_agent_id,
+                "state": r.state,
+                "summary": r.summary,
+                "created_at": r.created_at,
+                "deadline": r.deadline,
+            }
+            for r in store.list_for_recipient(my_agent)
+        ]
+
+    def request_respond(
+        self,
+        request_id: str,
+        action: str,
+        *,
+        detail: str = "",
+        session_id: str | None = None,
+    ) -> dict:
+        """Recipient action: accept|progress|complete|fail|refuse (G4.5)."""
+        store = self._request_store()
+        request = store.get(request_id)
+        if request is None:
+            raise ValueError(f"unknown request {request_id}")
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
+        if rec.agent_id != request.recipient_agent_id and rec.peer_id != request.recipient_agent_id:
+            raise ValueError("only the recipient may respond to this request")
+        target = {
+            "accept": "accepted",
+            "progress": "in_progress",
+            "complete": "completed",
+            "fail": "failed",
+            "refuse": "refused",
+        }.get(action)
+        if target is None:
+            raise ValueError(f"unknown request action {action!r}")
+        updated = store.transition(request.request_id, target, detail=detail)
+        return {"request_id": request.request_id, "state": updated.state if updated else request.state}
+
+    def request_cancel(self, request_id: str, *, session_id: str | None = None) -> dict:
+        """Advisory cancellation: never interrupts an active tool (G4.6)."""
+        store = self._request_store()
+        request = store.get(request_id)
+        if request is None:
+            raise ValueError(f"unknown request {request_id}")
+        updated = store.transition(request.request_id, "cancelled", detail="cancelled by sender")
+        return {"request_id": request.request_id, "state": updated.state if updated else request.state}
+
+    def request_expire_overdue(self) -> int:
+        """Bounded expiry cleanup (P5.8)."""
+        return self._request_store().expire_overdue()
+
+    # ------------------------------------------------------------------
+    # Groups and broadcasts (P4/P7)
+    # ------------------------------------------------------------------
+
+    def _group_store(self):
+        from agent_peer.groups import GroupStore
+
+        if getattr(self, "_groups", None) is None:
+            self._groups = GroupStore(self._store)
+        return self._groups
+
+    def group_create(self, name: str, *, session_id: str | None = None) -> dict:
+        """Create a group owned by the invoking session's agent (G3.1)."""
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
+        owner = rec.agent_id or rec.peer_id
+        g = self._group_store().create_group(owner, name)
+        return {"group_id": g.group_id, "name": g.name, "owner_agent_id": g.owner_agent_id}
+
+    def group_list(self, *, session_id: str | None = None) -> list[dict]:
+        groups = self._group_store().list_groups()
+        return [
+            {
+                "group_id": g.group_id,
+                "name": g.name,
+                "owner_agent_id": g.owner_agent_id,
+                "members": self._group_store().member_count(g.group_id),
+            }
+            for g in groups
+        ]
+
+    def group_members_list(self, group_id: str) -> list[dict]:
+        """Public group-members query (RISKY-3).
+
+        Returns member dicts; unknown groups return an empty list.
+        """
+        store = self._group_store()
+        if store.get_group(group_id) is None:
+            return []
+        return [
+            {"agent_id": m.agent_id, "peer_id": m.peer_id}
+            for m in store.members(group_id)
+        ]
+
+    def group_add_member(
+        self, group_id: str, member_agent_id: str, *, peer_id: str = "", session_id: str | None = None
+    ) -> dict:
+        store = self._group_store()
+        ok = store.add_member(group_id, member_agent_id, peer_id=peer_id)
+        if not ok:
+            # Distinguish an unknown group from an idempotent duplicate:
+            # a member already present is not an error — it reports
+            # added:false (CAREFUL-1).
+            if store.get_group(group_id) is None:
+                raise ValueError(f"cannot add member: unknown group {group_id}")
+            return {
+                "group_id": group_id,
+                "member_agent_id": member_agent_id,
+                "added": False,
+            }
+        return {"group_id": group_id, "member_agent_id": member_agent_id, "added": True}
+
+    def group_remove_member(self, group_id: str, member_agent_id: str, *, session_id: str | None = None) -> dict:
+        ok = self._group_store().remove_member(group_id, member_agent_id)
+        if not ok:
+            raise ValueError(f"cannot remove member: unknown group or member {group_id}/{member_agent_id}")
+        return {"group_id": group_id, "member_agent_id": member_agent_id, "removed": True}
+
+    def group_delete(self, group_id: str, *, session_id: str | None = None) -> dict:
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
+        owner = rec.agent_id or rec.peer_id
+        ok = self._group_store().delete_group(group_id, owner_agent_id=owner)
+        if not ok:
+            raise ValueError(f"cannot delete group {group_id}: not found or not owned by {owner}")
+        return {"group_id": group_id, "deleted": True}
+
+    def broadcast_send(
+        self,
+        group_id: str,
+        content: str,
+        *,
+        session_id: str | None = None,
+    ) -> dict:
+        """Broadcast one message to every member's live session (P4).
+
+        Persist-parent-first, deterministic per-recipient children, bounded
+        concurrency, explicit partial results (G3.5/G3.6).
+        """
+        from agent_peer.broadcast import BroadcastEngine
+
+        if session_id is None:
+            if len(self._peers) == 1:
+                session_id = next(iter(self._peers))
+            else:
+                raise ValueError("no session_id supplied and multiple sessions active")
+        rec = self._require_session(session_id)
+        sender_agent = rec.agent_id or rec.peer_id
+        sender_peer = rec.peer_id
+        groups = self._group_store()
+        engine = BroadcastEngine(
+            self._store,
+            groups,
+            send=self._broadcast_send_one(sender_peer),
+            resolve=self._broadcast_resolve,
+            concurrency=self._config.fanout_concurrency,
+            ttl_seconds=self._config.broadcast_ttl_seconds,
+        )
+        bid = engine.create_broadcast(sender_agent, group_id, content)
+        result = engine.fan_out(bid)
+        return {"broadcast_id": result.broadcast_id, "summary": result.summary, "per_member": result.per_member}
+
+    def broadcast_outcomes(self, broadcast_id: str) -> dict:
+        """Public broadcast-outcomes query (RISKY-3).
+
+        Reads recorded per-recipient outcomes from the store without
+        exposing SQLite. Unknown broadcasts return an empty per_member
+        list (Dashboard decides the 404).
+        """
+        with self._store._lock:
+            rows = self._store._conn.execute(
+                "SELECT recipient_agent_id, resolved_peer_id, child_message_id, state, detail "
+                "FROM broadcast_children WHERE broadcast_id=? ORDER BY recipient_agent_id",
+                (broadcast_id,),
+            ).fetchall()
+        return {
+            "broadcast_id": broadcast_id,
+            "per_member": [
+                {
+                    "agent_id": r[0],
+                    "peer_id": r[1],
+                    "child_message_id": r[2],
+                    "state": r[3],
+                    "detail": r[4],
+                }
+                for r in rows
+            ],
+        }
+
+    def _broadcast_send_one(self, sender_peer_id: str):
+        """Build a send callback bound to the exact invoking session (F-03)."""
+
+        def _send(agent_id, peer_id, content, *, child_message_id=None) -> dict:
+            from agent_peer.models import Kind, PeerIdentity, make_envelope
+
+            env = make_envelope(
+                sender=PeerIdentity(peer_id=sender_peer_id, name="broadcast", profile=""),
+                recipient_peer_id=peer_id,
+                kind=Kind.MESSAGE,
+                content=content,
+            )
+            receipt = self._runtime.send(env)
+            return {"state": receipt.state.value, "detail": receipt.detail}
+
+        return _send
+
+    def _broadcast_resolve(self, agent_id, pin=None):
+        """Resolve an agent to its live primary session (G2.5)."""
+        try:
+            record = self._discovery.resolve_agent(agent_id, pinned_peer_id=pin)
+            return record
+        except Exception:  # noqa: BLE001 - fail closed to unreachable
+            return None
+
     def doctor(self) -> dict:
-        """Diagnostics for `hermes peer doctor` (REL-1104)."""
+        """Diagnostics for `hermes peer doctor` (REL-1104, P6.3/G1.4).
+
+        Combines the v1 seam/runtime facts with the content-free health
+        snapshot (backend, peers, store, groups, requests, stale state),
+        metrics and actionable remedies.
+        """
+        from agent_peer.groups import GroupStore
+        from agent_peer.health import health_snapshot
+        from agent_peer.requests import RequestStore
+
         from .plugin import host_seam_supported
 
+        # Stale count is read-only here (never a side-effectful repair in
+        # doctor): registry heartbeat staleness, not mutation.
+        stale = len(self._registry.stale_candidates())
+        groups = GroupStore(self._store)
+        requests = RequestStore(self._store)
+        health = health_snapshot(
+            backend_kind=self._runtime._backend.kind,
+            runtime_dir=self._paths.root,
+            registry_entries=len(self._registry.list_peers()),
+            local_sessions=len(self._peers),
+            live_peers=len(self._discovery.list_live_peers()),
+            pending_messages=self._store.count_all(),
+            groups=len(groups.list_groups()),
+            active_requests=requests.count_active(),
+            stale_count=stale,
+            store_ok=True,
+            metrics=self._metrics.snapshot(),
+        )
         return {
             "seam_supported": host_seam_supported(self._ctx),
             "runtime_dir": str(self._paths.root),
-            "registry_entries": len(self._registry.list_peers()),
-            "local_sessions": len(self._peers),
+            "registry_entries": health["registry_entries"],
+            "local_sessions": health["local_sessions"],
+            "live_peers": health["live_peers"],
+            "pending_messages": health["pending_messages"],
+            "groups": health["groups"],
+            "active_requests": health["active_requests"],
+            "stale_count": health["stale_count"],
+            "backend": health["backend"],
             "policy": self._policy.policy.value,
-            "ok": host_seam_supported(self._ctx) and not self._paths.root.is_symlink(),
+            "metrics": health["metrics"],
+            "problems": health["problems"],
+            "ok": health["ok"] and host_seam_supported(self._ctx) and not self._paths.root.is_symlink(),
         }
+
+    def metrics_snapshot(self) -> dict:
+        """Content-free metrics for Desktop/status (P6.1, G1.1)."""
+        return self._metrics.snapshot()
+
+    def subscribe_events(self) -> int:
+        """Bounded event subscription for Desktop acceleration (G1.8)."""
+        return self._events.subscribe()
+
+    def unsubscribe_events(self, sid: int) -> None:
+        self._events.unsubscribe(sid)
+
+    def drain_events(self, sid: int) -> list[dict]:
+        return self._events.drain(sid)
 
     def _envelope_from_row(self, row: dict) -> Envelope:
         """Rebuild an Envelope from a stored row (for release)."""

@@ -59,7 +59,19 @@ def two_peers(env):
 
 class TestToolSchemas:
     def test_exactly_three_tools_no_duplicates(self, env):
-        assert set(env.tools) == {"peer_list_agents", "peer_send_message", "peer_read_inbox"}
+        """V1 three tools preserved + V2 request/group tools (P7.1/P7.2)."""
+        assert set(env.tools) == {
+            "peer_list_agents",
+            "peer_send_message",
+            "peer_read_inbox",
+            "peer_request_create",
+            "peer_request_status",
+            "peer_request_respond",
+            "peer_request_cancel",
+            "peer_group_list",
+            "peer_group_manage",
+            "peer_broadcast",
+        }
         for spec in env.tools.values():
             assert spec["toolset"] == "hermes-peer"
             assert isinstance(spec["schema"], dict)

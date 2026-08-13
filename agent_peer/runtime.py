@@ -34,13 +34,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .codec import FrameDecoder, encode_envelope
+from .codec import FrameDecoder, decode_envelope, encode_envelope
 from .constants import PROTOCOL_ID, RECEIPT_TIMEOUT
 from .errors import AgentPeerError, FrameError, TimeoutError_, UnreachableError
 from .models import Envelope, Kind, PeerRecord, Receipt, ReceiptState
 from .paths import RuntimePaths, select_runtime_dir
 from .registry import Registry
-from .transport import PeerClient, peer_credentials, verify_peer_credentials
 
 logger = logging.getLogger("agent_peer.runtime")
 
@@ -89,24 +88,45 @@ class PeerRuntimeManager:
     _instance: PeerRuntimeManager | None = None
     _instance_lock = threading.Lock()
 
-    def __init__(self, runtime_root: Path | RuntimePaths | None = None, registry: Registry | None = None) -> None:
+    def __init__(
+        self,
+        runtime_root: Path | RuntimePaths | None = None,
+        registry: Registry | None = None,
+        backend=None,
+        path_backend=None,
+    ) -> None:
+        from .backends import get_transport_backend
+        from .platform_paths import get_path_backend
+
         self._paths = (
             runtime_root
             if isinstance(runtime_root, RuntimePaths)
             else RuntimePaths(runtime_root or select_runtime_dir())
         )
         self._registry = registry or Registry(self._paths)
+        self._backend = backend or get_transport_backend()
+        self._path_backend = path_backend or get_path_backend()
         self._selector = selectors.DefaultSelector()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._peers: dict[str, PeerRecord] = {}
         self._connections: dict[socket.socket, _Connection] = {}
         self._handlers: dict[str, MessageHandler] = {}
-        # peer_id -> listening socket (exact ownership, REM-405).
-        self._listeners: dict[str, socket.socket] = {}
-        self._listener_owners: dict[socket.socket, str] = {}
+        # peer_id -> listening handle (exact ownership, REM-405).
+        self._listeners: dict[str, object] = {}
+        self._listener_owners: dict[object, str] = {}
         self._lock = threading.RLock()
-        self._wakeup_r, self._wakeup_w = os.pipe()
+        # Windows: named pipes have no pollable fd, so the supervisor runs a
+        # bounded per-listener wait thread per peer (P2 native gate) instead
+        # of the POSIX selector. Keyed by peer_id for teardown.
+        self._is_windows = os.name != "posix"
+        self._windows_threads: dict[str, threading.Thread] = {}
+        # Use socketpair for wakeup — works with selectors on ALL platforms.
+        # os.pipe() FDs are not selectable on Windows where SelectSelector
+        # only supports sockets, causing silent failures if the selector
+        # loop is ever invoked.
+        self._wakeup_r, self._wakeup_w = socket.socketpair()
+        self._wakeup_r.setblocking(False)
         self._selector.register(self._wakeup_r, selectors.EVENT_READ, "wakeup")
 
     # ------------------------------------------------------------------
@@ -138,31 +158,50 @@ class PeerRuntimeManager:
         with self._lock:
             socket_path = self._paths.socket_path_for(record.peer_id, record.instance_id)
             self._reclaim_stale_socket(socket_path)
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener = None
             try:
-                sock.bind(str(socket_path))
-                os.chmod(socket_path, 0o600)
-                sock.listen(64)
-                sock.setblocking(False)
+                listener = self._backend.bind_listener(
+                    socket_path,
+                    instance_id=record.instance_id,
+                )
                 # Capture the bound socket's UID and inode (REM-105/106).
-                st = socket_path.stat()
+                # POSIX: AF_UNIX socket files expose st_uid/st_ino and the
+                # discovery fence compares them. Windows: named pipes have
+                # no filesystem node (SID/DACL is the authority), so the
+                # stat cannot apply — leave the authority fields unset.
+                socket_uid: int | None = None
+                socket_inode: int | None = None
+                if os.name == "posix":
+                    try:
+                        st = socket_path.stat()
+                        socket_uid = st.st_uid
+                        socket_inode = st.st_ino
+                    except OSError:
+                        socket_uid = None
+                        socket_inode = None
                 import dataclasses
 
                 record = dataclasses.replace(
                     record,
                     socket_path=str(socket_path),
-                    socket_uid=st.st_uid,
-                    socket_inode=st.st_ino,
+                    socket_uid=socket_uid,
+                    socket_inode=socket_inode,
                     protocol=record.protocol or PROTOCOL_ID,
                 )
-                self._selector.register(sock, selectors.EVENT_READ, "listen")
+                if self._is_windows:
+                    # Named pipes: bounded per-listener wait thread (P2).
+                    self._start_windows_listener(record.peer_id, listener)
+                    self._thread = None  # selector thread unused on Windows
+                else:
+                    self._selector.register(listener, selectors.EVENT_READ, "listen")
                 self._peers[record.peer_id] = record
                 self._handlers[record.peer_id] = on_message
-                self._listeners[record.peer_id] = sock
-                self._listener_owners[sock] = record.peer_id
-                self._ensure_thread()
-                if self._thread is None or not self._thread.is_alive():
-                    raise RuntimeError("peer supervisor failed to start")
+                self._listeners[record.peer_id] = listener
+                self._listener_owners[listener] = record.peer_id
+                if not self._is_windows:
+                    self._ensure_thread()
+                    if self._thread is None or not self._thread.is_alive():
+                        raise RuntimeError("peer supervisor failed to start")
                 # Publication is the final registration step: the listener and
                 # confirmed supervisor are already ready to answer probes.
                 self._registry.register(record)
@@ -175,12 +214,20 @@ class PeerRuntimeManager:
                 return handle
             except Exception:
                 # Close/unregister the listener and leave no record.
-                with suppress(Exception):
-                    self._selector.unregister(sock)
-                with contextlib.suppress(OSError):
-                    sock.close()
-                with contextlib.suppress(OSError):
-                    socket_path.unlink()
+                if listener is not None:
+                    if not self._is_windows:
+                        with suppress(Exception):
+                            self._selector.unregister(listener)
+                    # On Windows, close the pipe handle FIRST so the
+                    # pending ConnectNamedPipe in the wait thread returns
+                    # immediately, THEN join the thread.
+                    if self._is_windows:
+                        with suppress(Exception):
+                            listener.close()
+                        self._stop_windows_listener(record.peer_id)
+                    else:
+                        self._stop_windows_listener(record.peer_id)
+                        listener.close()
                 self._peers.pop(record.peer_id, None)
                 self._handlers.pop(record.peer_id, None)
                 owned_listener = self._listeners.pop(record.peer_id, None)
@@ -250,13 +297,25 @@ class PeerRuntimeManager:
                 else self._paths.socket_path_for(peer_id)
             )
 
-            # 2+3. Unregister and close the exact listener FD.
+            # 2+3. Unregister and close the exact listener FD. The endpoint
+            # path is NOT touched here — step 6 unlinks only after the
+            # UID/inode fence proves the path is still the exact owned one.
             if listener is not None:
                 self._listener_owners.pop(listener, None)
-                with suppress(Exception):
-                    self._selector.unregister(listener)
-                with contextlib.suppress(OSError):
-                    listener.close()
+                if not self._is_windows:
+                    with suppress(Exception):
+                        self._selector.unregister(listener)  # type: ignore[attr-defined]
+                # On Windows, close the pipe handle FIRST to unblock the
+                # pending synchronous ConnectNamedPipe in the wait thread.
+                # CloseHandle on a handle with a pending synchronous pipe
+                # operation may raise — suppress so the thread join still runs.
+                if self._is_windows:
+                    with suppress(Exception):
+                        listener.close_fd()  # type: ignore[attr-defined]
+                    self._stop_windows_listener(peer_id)
+                else:
+                    listener.close_fd()  # type: ignore[attr-defined]
+                    self._stop_windows_listener(peer_id)
 
             # 4. Close accepted connections belonging to this listener/peer.
             for conn in list(self._connections.keys()):
@@ -304,13 +363,27 @@ class PeerRuntimeManager:
         Resolves the recipient's registry record, connects to its socket,
         awaits the transport receipt (bounded) and maps failures to explicit
         receipt states.
+
+        Sender authentication (SEC-R1): the envelope's ``sender.peer_id`` must
+        match a peer registered in this runtime manager. The sender identity
+        is overridden from the registered record so the recipient sees the
+        authenticated identity, never a caller-claimed one. An unregistered
+        sender is rejected with INVALID — no spoofing is possible.
         """
+        authenticated_sender = self._authenticate_sender(envelope)
+        if authenticated_sender is None:
+            return self._receipt(envelope, ReceiptState.INVALID, "sender not registered in this runtime")
+        envelope = self._stamp_sender(envelope, authenticated_sender)
         recipient = self._registry.get(envelope.recipient_peer_id)
         if recipient is None or not recipient.socket_path:
             return self._receipt(envelope, ReceiptState.UNREACHABLE, "no registry record")
         try:
-            client = PeerClient(recipient.socket_path, receipt_timeout=RECEIPT_TIMEOUT)
-            reply = client.request(envelope)
+            endpoint = self._backend_endpoint(recipient.socket_path)
+            payload = encode_envelope(envelope).encode("utf-8")
+            reply_payload = self._backend.request(
+                endpoint, payload, timeout=RECEIPT_TIMEOUT
+            )
+            reply = decode_envelope(reply_payload)
         except UnreachableError as exc:
             return self._receipt(envelope, ReceiptState.UNREACHABLE, str(exc))
         except TimeoutError_ as exc:
@@ -344,13 +417,18 @@ class PeerRuntimeManager:
             peer_ids = list(self._peers.keys())
             for peer_id in peer_ids:
                 self.unregister_peer(peer_id)
+            # Stop any remaining Windows wait threads (unregister_peer
+            # joins the peer's thread; this is belt-and-braces for peers
+            # that were never registered via the normal path).
+            for pid in list(self._windows_threads.keys()):
+                self._stop_windows_listener(pid)
             self._stop_event.set()
             self._wakeup()
             self._join_thread()
-            # Close wakeup pipe FDs exactly once.
-            for fd in (self._wakeup_r, self._wakeup_w):
+            # Close wakeup sockets exactly once.
+            for sock in (self._wakeup_r, self._wakeup_w):
                 with contextlib.suppress(OSError):
-                    os.close(fd)
+                    sock.close()
             with suppress(Exception):
                 self._selector.close()
             self._shutdown_done = True
@@ -371,9 +449,56 @@ class PeerRuntimeManager:
         if thread is not None:
             thread.join(timeout=3)
 
+    def _start_windows_listener(self, peer_id: str, listener: object) -> None:
+        """Start the bounded per-listener wait thread (P2 native gate).
+
+        Named pipes are not selectable; each listener gets one daemon
+        thread that blocks on ConnectNamedPipe, verifies the client SID
+        and services request/reply frames until the listener is closed.
+        """
+        self._stop_windows_listener(peer_id)
+        t = threading.Thread(
+            target=self._windows_wait_loop,
+            args=(peer_id, listener),
+            name=f"agent-peer-windows-{peer_id[:8]}",
+            daemon=True,
+        )
+        self._windows_threads[peer_id] = t
+        t.start()
+
+    def _stop_windows_listener(self, peer_id: str) -> None:
+        t = self._windows_threads.pop(peer_id, None)
+        if t is not None:
+            t.join(timeout=3)
+
+    def _windows_wait_loop(self, peer_id: str, listener: object) -> None:
+        """Serve one named-pipe listener: accept -> verify -> dispatch."""
+        while not self._stop_event.is_set():
+            try:
+                conn = listener.accept()  # type: ignore[attr-defined]
+                if conn is None:
+                    continue  # accept timeout — check stop event and retry
+            except Exception:
+                return  # listener closed during teardown
+            try:
+                evidence = self._backend.verify_remote_owner(conn._pipe)
+                if not evidence.authenticated:
+                    logger.warning(
+                        "dropping named-pipe connection from foreign owner: %s",
+                        evidence.detail,
+                    )
+                    continue
+                state = _Connection(conn, peer_id)  # type: ignore[arg-type]
+                self._service_connection(conn, state)  # type: ignore[arg-type]
+            except Exception:
+                logger.exception("named-pipe connection error for %s", peer_id)
+            finally:
+                with contextlib.suppress(Exception):
+                    conn.close()  # type: ignore[attr-defined]
+
     def _wakeup(self) -> None:
         with contextlib.suppress(OSError):
-            os.write(self._wakeup_w, b"x")
+            self._wakeup_w.send(b"x")
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -384,7 +509,7 @@ class PeerRuntimeManager:
             for key, _mask in events:
                 if key.data == "wakeup":
                     with contextlib.suppress(OSError):
-                        os.read(self._wakeup_r, 64)
+                        self._wakeup_r.recv(64)
                     continue
                 if key.data == "listen":
                     self._accept(key.fileobj)  # type: ignore[arg-type]
@@ -396,18 +521,19 @@ class PeerRuntimeManager:
                 self._stop_event.set()
                 self._wakeup()
 
-    def _accept(self, listen_sock: socket.socket) -> None:
+    def _accept(self, listen_handle: object) -> None:
         try:
-            conn, _ = listen_sock.accept()
+            conn = listen_handle.accept()  # type: ignore[attr-defined]
         except OSError:
             return
         conn.setblocking(False)
-        if not verify_peer_credentials(peer_credentials(conn)):
-            logger.warning("dropping connection from foreign UID")
+        evidence = self._backend.verify_remote_owner(conn)
+        if not evidence.authenticated:
+            logger.warning("dropping connection from foreign owner: %s", evidence.detail)
             with contextlib.suppress(OSError):
                 conn.close()
             return
-        listener_peer_id = self._listener_owners.get(listen_sock)
+        listener_peer_id = self._listener_owners.get(listen_handle)
         if listener_peer_id is None:
             with contextlib.suppress(OSError):
                 conn.close()
@@ -415,12 +541,13 @@ class PeerRuntimeManager:
         self._connections[conn] = _Connection(conn, listener_peer_id)
         self._selector.register(conn, selectors.EVENT_READ, "conn")
 
-    def _service_connection(self, conn: socket.socket) -> None:
-        state = self._connections.get(conn)
+    def _service_connection(self, conn: socket.socket, state: _Connection | None = None) -> None:
+        if state is None:
+            state = self._connections.get(conn)  # type: ignore[arg-type]
         if state is None or state.closed:
             return
         try:
-            chunk = conn.recv(65536)
+            chunk = conn.recv(65536)  # type: ignore[attr-defined]
         except BlockingIOError:
             return
         except OSError:
@@ -488,6 +615,9 @@ class PeerRuntimeManager:
                 "peer_id": record.peer_id,
                 "instance_id": record.instance_id,
                 "session_id": record.session_id,
+                "agent_id": record.agent_id,
+                "protocols": list(record.protocols),
+                "capabilities": record.capabilities,
                 "protocol": record.protocol,
                 "status": record.status,
             },
@@ -531,17 +661,22 @@ class PeerRuntimeManager:
     def _flush(self, conn: socket.socket, state: _Connection) -> None:
         while state.out_buffer:
             try:
-                sent = conn.send(state.out_buffer)
+                sent = conn.send(state.out_buffer)  # type: ignore[attr-defined]
             except BlockingIOError:
+                if self._is_windows:
+                    return  # pipe send is blocking; nothing to reschedule
                 self._selector.modify(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, "conn")
                 return
             except OSError:
                 self._drop_connection(conn)
                 return
             del state.out_buffer[:sent]
-        self._selector.modify(conn, selectors.EVENT_READ, "conn")
+        if not self._is_windows:
+            self._selector.modify(conn, selectors.EVENT_READ, "conn")
 
     def _service_writable(self) -> None:
+        if self._is_windows:
+            return
         for key in list(self._selector.get_map().values()):
             if key.data != "conn":
                 continue
@@ -557,10 +692,11 @@ class PeerRuntimeManager:
         if state is None or state.closed:
             return
         state.closed = True
-        with suppress(Exception):
-            self._selector.unregister(conn)
+        if not self._is_windows:
+            with suppress(Exception):
+                self._selector.unregister(conn)
         with contextlib.suppress(OSError):
-            conn.close()
+            conn.close()  # type: ignore[attr-defined]
 
     def _unbind_socket(self, socket_path: Path) -> None:
         try:
@@ -570,20 +706,49 @@ class PeerRuntimeManager:
         except OSError:
             logger.warning("could not unlink socket %s", socket_path)
 
+    def _backend_endpoint(self, socket_path: str):
+        """Wrap a recorded socket path as a backend transport endpoint."""
+        from .backends.base import TransportEndpoint
+
+        kind = "named-pipe" if self._is_windows else "unix"
+        return TransportEndpoint(kind=kind, address=socket_path)
+
     def _reclaim_stale_socket(self, socket_path: Path) -> None:
         """Crash recovery: remove a stale socket only if nothing listens on it."""
         if not socket_path.exists():
             return
-        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        probe.settimeout(0.5)
-        try:
-            probe.connect(str(socket_path))
+        endpoint = self._backend_endpoint(str(socket_path))
+        if self._backend.bound(endpoint, timeout=0.5):
             # Something IS listening; do not reclaim (another live instance).
-            probe.close()
             return
-        except OSError:
-            probe.close()
-            self._unbind_socket(socket_path)
+        self._unbind_socket(socket_path)
+
+    def _authenticate_sender(self, envelope: Envelope) -> PeerRecord | None:
+        """Return the registered peer matching the envelope's sender, or None.
+
+        SEC-R1: the sender is authenticated by matching ``sender.peer_id``
+        against the peers registered in THIS runtime manager. The bound
+        record (with the real name and profile) is the authenticated identity.
+        """
+        with self._lock:
+            for record in self._peers.values():
+                if record.peer_id == envelope.sender.peer_id:
+                    return record
+        return None
+
+    @staticmethod
+    def _stamp_sender(envelope: Envelope, record: PeerRecord) -> Envelope:
+        """Override the envelope sender with the authenticated peer record."""
+        import dataclasses
+
+        from .models import PeerIdentity
+
+        authenticated = PeerIdentity(
+            peer_id=record.peer_id,
+            name=record.name,
+            profile=record.profile,
+        )
+        return dataclasses.replace(envelope, sender=authenticated)
 
     def _receipt(self, envelope: Envelope, state: ReceiptState, detail: str) -> Receipt:
         return Receipt(

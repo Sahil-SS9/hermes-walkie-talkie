@@ -140,16 +140,31 @@ class TestStaticResourceGates:
     def test_no_tcp_listener_in_production_paths(self):
         import inspect
 
+        import agent_peer.backends.base
+        import agent_peer.backends.posix
+        import agent_peer.backends.windows
         import agent_peer.discovery
         import agent_peer.runtime
         import agent_peer.transport
 
+        # V1.1: the transport contract is backend-neutral. The no-AF_INET
+        # property now lives at the backend seam (the ONLY socket producers):
+        # runtime/discovery must contain no socket family at all, and the
+        # POSIX backend must use AF_UNIX exclusively.
         for mod in (agent_peer.discovery, agent_peer.runtime, agent_peer.transport):
             src = inspect.getsource(mod)
             # AF_UNIX is the only family used; no AF_INET listener.
-            assert "socket.AF_UNIX" in src or "AF_UNIX" in src
+            assert "socket.AF_UNIX" in src or "AF_UNIX" in src or "socket.socket" not in src
             assert "socket.AF_INET," not in src
             assert "AF_INET6" not in src.replace("AF_INET6", "") or "AF_INET6" not in src
+        for mod in (agent_peer.backends.base, agent_peer.backends.posix):
+            src = inspect.getsource(mod)
+            assert "AF_UNIX" in src
+            assert "socket.AF_INET," not in src
+            assert "AF_INET6" not in src.replace("AF_INET6", "") or "AF_INET6" not in src
+        # Windows backend must not create TCP listeners before native proof.
+        wsrc = inspect.getsource(agent_peer.backends.windows)
+        assert "AF_INET" not in wsrc
 
     def test_no_unbounded_thread_growth(self):
         """One supervisor thread per manager; no thread-per-peer."""

@@ -30,6 +30,7 @@ REPORT = REPO / ".coverage-gate.json"
 LINE_MIN = 90.0
 BRANCH_MIN = 85.0
 TRUST_DELIVERY_MODULES = (
+    # V1 trust path (untrusted wire input + message delivery)
     "agent_peer.codec",
     "agent_peer.discovery",
     "agent_peer.models",
@@ -39,6 +40,27 @@ TRUST_DELIVERY_MODULES = (
     "agent_peer.store",
     "agent_peer.transport",
     "hermes_peer.delivery",
+    # V1.1 trust path (P11.1): protocol, backend, group, workflow,
+    # metrics/health and API modules
+    "agent_peer.backends.base",
+    "agent_peer.backends.posix",
+    "agent_peer.backends.windows",
+    "agent_peer.protocol_v2",
+    "agent_peer.capabilities",
+    "agent_peer.agent_identity",
+    "agent_peer.groups",
+    "agent_peer.broadcast",
+    "agent_peer.workflows",
+    "agent_peer.requests",
+    "agent_peer.request_models",
+    "agent_peer.metrics",
+    "agent_peer.events",
+    "agent_peer.health",
+    "hermes_peer.sessions",
+    "hermes_peer.tools",
+    "hermes_peer.commands",
+    "hermes_peer.desktop_install",
+    "dashboard.plugin_api",
 )
 
 
@@ -63,6 +85,7 @@ def main() -> int:
         "--no-header",
         "--cov=agent_peer",
         "--cov=hermes_peer",
+        "--cov=dashboard",
         "--cov-branch",
         "--cov-report=term",
         f"--cov-report=json:{REPORT}",

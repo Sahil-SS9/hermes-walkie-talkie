@@ -34,12 +34,20 @@ def peer_credentials(sock: socket.socket | None = None) -> dict:
             return {"pid": pid, "uid": uid, "gid": gid}
         except OSError:
             pass
+    if os.name != "posix":
+        # Windows: named-pipe SID/DACL is the owner boundary (ADR-0005);
+        # no POSIX uid/gid exists. Mark credentials as platform-enforced.
+        return {"pid": os.getpid(), "uid": None, "gid": None}
     return {"pid": os.getpid(), "uid": os.geteuid(), "gid": os.getegid()}
 
 
 def verify_peer_credentials(creds: dict) -> bool:
     """Same-UID check: reject peers that do not belong to the OS user."""
     uid = creds.get("uid")
+    if uid is None:
+        # Windows: ownership is enforced by the SID-bound DACL at the
+        # named-pipe boundary; there is no POSIX uid to compare.
+        return os.name != "posix"
     return isinstance(uid, int) and uid == os.geteuid()
 
 
@@ -73,7 +81,12 @@ class PeerClient:
             # (same framing in both directions — see codec.encode_frame).
             from .codec import encode_frame
 
-            sock.sendall(encode_frame(encode_envelope(envelope)))
+            try:
+                sock.sendall(encode_frame(encode_envelope(envelope)))
+            except OSError as exc:
+                raise UnreachableError(
+                    f"cannot send to {self._socket_path}: {exc}"
+                ) from exc
             decoder = FrameDecoder()
             while True:
                 try:
@@ -81,6 +94,10 @@ class PeerClient:
                 except TimeoutError as exc:
                     raise TimeoutError_(
                         f"no receipt from {self._socket_path} within {self._receipt_timeout}s"
+                    ) from exc
+                except OSError as exc:
+                    raise UnreachableError(
+                        f"receive failed at {self._socket_path}: {exc}"
                     ) from exc
                 if not chunk:
                     raise UnreachableError(f"peer closed connection at {self._socket_path}")

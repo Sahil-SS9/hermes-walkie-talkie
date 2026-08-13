@@ -16,3 +16,4 @@ htmlcov/
 # Hypothesis cache
 .hypothesis/
 .coverage.*
+desktop/node_modules/

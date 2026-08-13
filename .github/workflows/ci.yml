@@ -12,6 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # POSIX suite (AF_UNIX/SO_PEERCRED) runs on POSIX runners; Windows
+        # evidence lives in the dedicated native-windows job (named pipes/DACL).
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13"]
     steps:
@@ -26,17 +28,93 @@ jobs:
         run: uv run pytest tests/unit -q
       - name: Integration tests
         run: uv run pytest tests/integration -q
-      - name: E2E tests
-        run: uv run pytest tests/e2e -q
+      - name: Security tests
+        run: uv run pytest tests/security -q
       - name: Full test suite
         run: uv run pytest -q
+      - name: Coverage gate
+        run: uv run python scripts/coverage_gate.py
       - name: Lint
         run: uv run ruff check .
       - name: Type check
-        run: uv run ty check agent_peer hermes_peer
-      - name: Build
+        run: uv run ty check agent_peer hermes_peer dashboard
+      - name: Build wheel and sdist
         run: uv build
-      # NOTE: Linux is the release-blocking platform for v1. The macOS job
-      # above is configured and runs the same matrix; platform-specific
-      # runtime verification (SO_PEERCRED equivalent) is covered on macOS CI
-      # once approved remote runs are enabled.
+      - name: Verify wheel assets (Python, dashboard, Desktop)
+        run: uv run python scripts/verify_wheel_assets.py
+      - name: Install from wheel + smoke (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl | head -1)
+          uv venv /tmp/wheel-venv
+          uv pip install --python /tmp/wheel-venv/bin/python "$wheel"
+          /tmp/wheel-venv/bin/python -c "import agent_peer, hermes_peer; print('wheel import OK')"
+      - name: E2E tests (POSIX native backends)
+        if: runner.os != 'Windows'
+        run: uv run pytest tests/e2e -q
+        env:
+          HERMES_CORE_ROOT: ${{ github.workspace }}/../hermes-core-checkout
+
+  native-windows:
+    # P9.2/P9.4/P9.9: REAL named-pipe/DACL/ACL evidence can only come from a
+    # native Windows runner. The main matrix above runs the Windows backend
+    # unit tests, which skip on non-Windows; this job executes the same suite
+    # ON Windows so the skips become real green evidence.
+    name: Native Windows (named pipes + ACL)
+    runs-on: windows-latest
+    needs: [test]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: uv sync --group dev --extra windows
+      - name: Windows backend unit tests (SID/DACL named pipes)
+        run: uv run pytest tests/unit/test_windows_backend.py tests/security/test_windows_owner_boundary.py -q
+      - name: Two-process named-pipe E2E
+        run: uv run pytest tests/e2e/test_cross_platform_two_processes.py -q
+      - name: Windows E2E surface
+        run: uv run pytest tests/e2e/test_windows_native.py -q
+
+  desktop:
+    name: Desktop build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Tests
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Verify built plugin bundle
+        shell: bash
+        run: |
+          test -f dist/plugin.js && test -f dist/style.css
+          grep -q "hermes-peer" dist/plugin.js
+          echo "desktop bundle OK"

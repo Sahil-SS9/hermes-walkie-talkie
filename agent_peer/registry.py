@@ -26,7 +26,7 @@ from pathlib import Path
 
 from .constants import STALE_THRESHOLD
 from .models import PeerRecord, Presence
-from .paths import RuntimePaths
+from .paths import RuntimePaths, same_owner
 
 logger = logging.getLogger("agent_peer.registry")
 
@@ -64,6 +64,9 @@ class Registry:
                 "session_id": record.session_id,
                 "name": record.name,
                 "profile": record.profile,
+                "agent_id": record.agent_id,
+                "protocols": list(record.protocols),
+                "capabilities": record.capabilities,
                 "surface": record.surface,
                 "host_target": record.host_target,
                 "pid": record.pid,
@@ -212,7 +215,9 @@ class Registry:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
                 return None
-            if st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) & 0o077:
+            if not same_owner(st) or (
+                os.name == "posix" and stat.S_IMODE(st.st_mode) & 0o077
+            ):
                 logger.warning("registry: refusing non-owner-only record %s", path)
                 return None
             raw = os.read(fd, 65_537)
@@ -299,9 +304,16 @@ class Registry:
         tmp = path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.fchmod(fd, 0o600)
+            # fchmod only sets the read-only bit on Windows and 0o600
+            # (owner rw) is meaningless there — it can also raise OSError
+            # on some Windows versions, causing the except-block in
+            # register_peer to run cleanup that deadlocks on the named
+            # pipe listener. Skip it on Windows.
+            if os.name == "posix":
+                os.fchmod(fd, 0o600)
             os.write(fd, json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-            os.fsync(fd)
+            if os.name == "posix":
+                os.fsync(fd)
         finally:
             os.close(fd)
         os.replace(tmp, path)

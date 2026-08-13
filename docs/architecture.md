@@ -41,6 +41,27 @@ Two packages:
     (one row per message_id), bounded retention
   - policy (`policy.py`): accept/hold/refuse, sliding-window rate limits,
     capacity caps, TTL and hop-count rejection with explicit receipts
+  - backends (`backends/`): backend-neutral local transport (ADR-0005).
+    POSIX AF_UNIX is the reference backend; Windows named pipes with
+    SID-bound DACLs are implemented and native-gated (release evidence
+    requires a real Windows runner)
+  - agent identity (`agent_identity.py`): stable per-profile UUID persisted
+    owner-only under HERMES_HOME, never inferred from alias/path text
+  - capabilities (`capabilities.py`): highest-mutual negotiation, fail-closed
+  - protocol v2 (`protocol_v2.py`): typed V2 envelopes (message/receipt/
+    discover/alive/request/request_status/request_cancel) with the
+    incompatible/ambiguous receipt states
+  - groups (`groups.py`): persistent groups CRUD — optimistic revision,
+    ownership fence, unique normalised names, member caps
+  - broadcast (`broadcast.py`): bounded broadcast engine — parent-first
+    persist, deterministic child IDs, atomic created→in_flight
+    single-writer gate, explicit partial results
+  - workflows (`workflows.py`): pure request transition decision table
+  - requests (`requests.py`): structured request/reply aggregate with
+    idempotency keys, correlation, ordered event log
+  - metrics (`metrics.py`): content-free counters/latency/failure-reason
+  - events (`events.py`): bounded local event broker for the Desktop surface
+  - health (`health.py`): actionable health snapshot with remedies
 
 - **hermes_peer** — Hermes adapter. Public plugin API only (enforced by the
   HP-710 structural test). Owns:
@@ -55,9 +76,22 @@ Two packages:
     delivery via `ctx.inject_message(..., mode="queue", target_session=...)`,
     store-level dedup, fail-closed on unknown targets or missing seam
   - tools (`tools.py`): `peer_list_agents`, `peer_send_message`,
-    `peer_read_inbox`
+    `peer_read_inbox`, request tools (`peer_request_create/status/respond/
+    cancel`) and group tools (`peer_group_list/peer_group_manage/
+    peer_broadcast`)
   - commands (`commands.py`): `/peers`, `/peer-name`, `/peer-policy`,
-    `/peer-inbox` and `hermes peer {list|send|inbox|name|policy|doctor}`
+    `/peer-inbox`, `/peer-groups`, `/peer-group`, `/peer-broadcast`,
+    `/peer-request` and `hermes peer {list|send|inbox|name|policy|groups|
+    group|broadcast|request|desktop|doctor}`
+  - desktop install (`desktop_install.py`): explicit `hermes peer desktop
+    install|status|remove` for the compiled Desktop bundle (never automatic)
+  - dashboard (`dashboard/`): FastAPI plugin_api at
+    `/api/plugins/hermes-peer` plus `manifest.json` for the Hermes Desktop
+    plugin host (health/metrics/peers/groups/broadcast outcomes/inbox/
+    requests and a /events WebSocket)
+  - desktop (`desktop/`): React + TypeScript source built via vite into the
+    compiled `plugin.js` + `style.css` shipped under
+    `hermes_peer/assets/desktop`
 
 ## Discovery and identity
 
@@ -116,6 +150,67 @@ with host-owned routing on CLI (`HermesCLI.inject_message`), dashboard
 (`tui_gateway.server.inject_external_message`) and gateway
 (`GatewayRunner.inject_plugin_message`, gated per plugin via
 `allow_gateway_injection`). See ADR-0002 and `docs/review/upstream-pr-draft.md`.
+
+## V1.1: agent identity, groups, broadcasts and requests
+
+- **Agent identity (G2.3).** Every profile owns a stable UUID persisted
+  owner-only under `HERMES_HOME/agent_identity.json` (`agent_identity.py`).
+  Peer discovery and membership always address peers by `agent_id`; the
+  per-session `peer_id` remains a session-scoped transport handle. A session
+  reset keeps the same `agent_id` but rotates the `peer_id` (P9.6).
+- **Protocol negotiation (G2.4).** Peers advertise `protocols`
+  (`agent-peer/1`, `agent-peer/2`) and `capabilities`. Negotiation picks the
+  highest mutual protocol; incompatible/ambiguous receivers return explicit
+  receipt states and fail closed.
+- **Groups (G3).** `GroupStore` keeps groups/group_members in SQLite
+  (schema v3): owner fence, unique normalised names, optimistic revision,
+  member caps (default 32, hard 128). Membership is by stable `agent_id`;
+  aliases are display-only.
+- **Broadcasts (G3).** `BroadcastEngine` persists the parent first, derives
+  deterministic child IDs from `(broadcast_id, agent_id, peer_id)`, and uses
+  an atomic `created→in_flight` transition so concurrent duplicate
+  broadcasters converge on exactly one child per recipient. Fan-out is
+  bounded; results are explicit per-recipient with queued/held/skipped/
+  unreachable accounting; the sender is always self-excluded.
+- **Structured requests (G4).** A pure decision table
+  (`workflows.py`) drives `created → queued → accepted → in_progress →
+  completed|failed|refused|cancelled|expired`; impossible/stale/out-of-order
+  transitions are rejected, cancel is advisory, terminal states are frozen.
+  `RequestStore` dedupes by `(sender, idempotency_key)` and keeps an ordered
+  event log. Requests arrive at the recipient as the inert
+  `<peer_request>` conversational marker — never as an executable command.
+- **Surfaces.** A session may open on `cli`, `tui`/`dashboard` (collapsed to
+  `tui`) or `desktop` (preserved distinctly). Delivery targets the opaque
+  `host_target = surface:session_id` token.
+
+## V1.1: Desktop surface and dashboard
+
+- `hermes peer desktop install` copies the compiled bundle
+  (`plugin.js` + `style.css`, vite build of `desktop/`) into
+  `$HERMES_HOME/desktop-plugins/hermes-peer/` — **explicitly only**, never on
+  plugin load (G6.9).
+- The Hermes Desktop plugin host mounts the dashboard API at
+  `/api/plugins/hermes-peer/` from `dashboard/plugin_api.py`: health,
+  metrics, peers, groups + members, broadcast outcomes, inbox, requests +
+  respond, and a `/events` WebSocket. The socket delegates auth to the
+  dashboard's canonical `_ws_auth_ok` gate and always sends a frame
+  (heartbeat) so clients never hang.
+- The React panel (Peers/Groups/Inbox/Requests/Health tabs) keeps a
+  profile-scoped cache so switching profiles never leaks another profile's
+  state.
+
+## Backend neutrality (ADR-0005)
+
+- `agent_peer.backends` defines the transport/owner/path contract. POSIX
+  AF_UNIX is the reference backend (same-UID check via SO_PEERCRED on
+  Linux; fallback paths on macOS).
+- Windows implements named pipes with SID-bound DACLs (owner-only,
+  wrong-user denied at the OS boundary). All Windows tests are native-gated:
+  they skip with an explicit reason on non-Windows and become real green
+  evidence only on a native Windows runner (CI job `native-windows`).
+- Native Windows CI now verifies the named-pipe and SID/DACL gates. Windows
+  wheel-install and full Desktop/Electron interaction coverage remain
+  explicitly unverified.
 
 ## Extension points
 

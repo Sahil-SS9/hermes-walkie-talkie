@@ -313,6 +313,10 @@ class TestNoNetwork:
                 assert "AF_INET" not in text, f"{py} uses AF_INET"
                 assert "SOCK_STREAM" not in text or "AF_UNIX" in text, f"{py}"
 
+    @pytest.mark.skipif(
+        not os.path.isdir("/proc/self/fd"),
+        reason="/proc fd/net inspection is Linux-only (no procfs on macOS/Windows)",
+    )
     def test_worker_process_has_no_tcp_listener(self, isolated_runtime, tmp_path):
         """A running peer worker's /proc net tables show no LISTEN entries."""
         runtime_dir, _ = isolated_runtime

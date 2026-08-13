@@ -53,6 +53,10 @@ class TestListenerTeardown:
     lacks the listener, FD count returns to baseline and a path replacement
     cannot be unlinked."""
 
+    @pytest.mark.skipif(
+        not os.path.isdir(f"/proc/{os.getpid()}/fd"),
+        reason="/proc fd counting is Linux-only (no procfs on macOS/Windows)",
+    )
     def test_unregister_closes_listener_and_frees_fd(self, tmp_path):
         paths = RuntimePaths(tmp_path / "runtime")
         mgr = PeerRuntimeManager(paths)

@@ -1,6 +1,11 @@
-"""Hermes agent tools: peer_list_agents, peer_send_message, peer_read_inbox (HP-801..HP-803).
+"""Hermes agent tools: peer_list_agents, peer_send_message, peer_read_inbox
+plus the V1.1 request and group tools.
 
-Exactly three tools in v1, with stable JSON schemas and useful errors.
+The V1 surface is peer_list_agents / peer_send_message / peer_read_inbox
+(HP-801..HP-803). V1.1 adds the request tools (peer_request_create,
+peer_request_status, peer_request_respond, peer_request_cancel) and the
+group tools (peer_group_list, peer_group_manage, peer_broadcast) — ten
+tools total, each with a stable JSON schema and useful errors.
 Handlers are pure functions of ``(args)`` that resolve the process-global
 manager; the manager is registered by ``hermes_peer.plugin.register``.
 """
@@ -78,6 +83,134 @@ def register_tools(ctx) -> None:
         description="List held/queued peer messages, or release/refuse a held message.",
         emoji="📥",
     )
+    ctx.register_tool(
+        "peer_request_create",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "target_agent_id": {
+                    "type": "string",
+                    "description": "Stable agent_id of the recipient agent.",
+                },
+                "summary": {"type": "string", "description": "Short request summary."},
+                "detail": {"type": "string", "description": "Optional longer detail."},
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "Optional; repeated key returns the original request.",
+                },
+            },
+            "required": ["target_agent_id", "summary"],
+            "additionalProperties": False,
+        },
+        handler=peer_request_create,
+        description="Create and enqueue a structured request to one agent (conversational input only).",
+        emoji="📋",
+    )
+    ctx.register_tool(
+        "peer_request_status",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "Request id to query."},
+            },
+            "required": ["request_id"],
+            "additionalProperties": False,
+        },
+        handler=peer_request_status,
+        description="Poll the state timeline of a structured request.",
+        emoji="🔎",
+    )
+    ctx.register_tool(
+        "peer_request_respond",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "Request id."},
+                "action": {
+                    "type": "string",
+                    "enum": ["accept", "progress", "complete", "fail", "refuse"],
+                    "description": "Recipient action on the request.",
+                },
+                "detail": {"type": "string", "description": "Optional progress note."},
+            },
+            "required": ["request_id", "action"],
+            "additionalProperties": False,
+        },
+        handler=peer_request_respond,
+        description="Recipient: accept/progress/complete/fail/refuse a structured request.",
+        emoji="✅",
+    )
+    ctx.register_tool(
+        "peer_request_cancel",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "Request id."},
+            },
+            "required": ["request_id"],
+            "additionalProperties": False,
+        },
+        handler=peer_request_cancel,
+        description="Advisory cancellation of a structured request (never interrupts tools).",
+        emoji="⏹️",
+    )
+    ctx.register_tool(
+        "peer_group_list",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        handler=peer_group_list,
+        description="List persistent peer groups with member counts.",
+        emoji="👥",
+    )
+    ctx.register_tool(
+        "peer_group_manage",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "add_member", "remove_member", "delete"],
+                    "description": "Group operation.",
+                },
+                "name": {"type": "string", "description": "Group name (create)."},
+                "group_id": {"type": "string", "description": "Group id (add/remove/delete)."},
+                "member_agent_id": {
+                    "type": "string",
+                    "description": "Stable agent_id of the member (add/remove).",
+                },
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        handler=peer_group_manage,
+        description="Create a group, add/remove a member by stable agent_id, or delete a group.",
+        emoji="⚙️",
+    )
+    ctx.register_tool(
+        "peer_broadcast",
+        toolset="hermes-peer",
+        schema={
+            "type": "object",
+            "properties": {
+                "group_id": {"type": "string", "description": "Group id to broadcast to."},
+                "message": {"type": "string", "description": "Message text."},
+            },
+            "required": ["group_id", "message"],
+            "additionalProperties": False,
+        },
+        handler=peer_broadcast,
+        description="Broadcast one message to every live member session of a group (partial results explicit).",
+        emoji="📣",
+    )
 
 
 def peer_list_agents(args: dict, **kwargs) -> str:
@@ -94,6 +227,7 @@ def peer_list_agents(args: dict, **kwargs) -> str:
         peers.append(
             {
                 "peer_id": record.peer_id,
+                "agent_id": record.agent_id,
                 "name": record.name,
                 "profile": record.profile,
                 "surface": record.surface,
@@ -165,3 +299,137 @@ def peer_read_inbox(args: dict, **kwargs) -> str:
         return json.dumps({"released": ok, "message_id": message_id} if ok else {"error": f"no held message {message_id}"})
     ok = mgr.refuse_message(message_id, session_id=session_id)
     return json.dumps({"refused": ok, "message_id": message_id} if ok else {"error": f"no held message {message_id}"})
+
+
+def peer_request_create(args: dict, **kwargs) -> str:
+    """Create + enqueue a structured request to one agent (P5, G4).
+
+    The request is conversational input only — it cannot approve tools,
+    invoke slash commands or bypass policy (G4.9).
+    """
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    target_agent_id = (args.get("target_agent_id") or "").strip()
+    summary = (args.get("summary") or "").strip()
+    if not target_agent_id or not summary:
+        return json.dumps({"error": "target_agent_id and summary are required"})
+    session_id = kwargs.get("session_id")
+    try:
+        result = mgr.create_request(
+            target_agent_id,
+            summary,
+            payload={"detail": args.get("detail")} if args.get("detail") else None,
+            idempotency_key=args.get("idempotency_key") or "",
+            session_id=session_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("peer_request_create failed: %s", exc)
+        return json.dumps({"error": f"request failed: {exc}"})
+    return json.dumps(result)
+
+
+def peer_request_status(args: dict, **kwargs) -> str:
+    """Poll the state timeline of a structured request (G4.10)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    request_id = (args.get("request_id") or "").strip()
+    if not request_id:
+        return json.dumps({"error": "request_id is required"})
+    session_id = kwargs.get("session_id")
+    try:
+        return json.dumps(mgr.request_status(request_id, session_id=session_id))
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def peer_request_respond(args: dict, **kwargs) -> str:
+    """Recipient action on a structured request (G4.5)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    request_id = (args.get("request_id") or "").strip()
+    action = (args.get("action") or "").strip().lower()
+    if not request_id or action not in ("accept", "progress", "complete", "fail", "refuse"):
+        return json.dumps({"error": "request_id and action (accept|progress|complete|fail|refuse) are required"})
+    session_id = kwargs.get("session_id")
+    try:
+        return json.dumps(
+            mgr.request_respond(request_id, action, detail=args.get("detail") or "", session_id=session_id)
+        )
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def peer_request_cancel(args: dict, **kwargs) -> str:
+    """Advisory cancellation of a structured request (G4.6)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    request_id = (args.get("request_id") or "").strip()
+    if not request_id:
+        return json.dumps({"error": "request_id is required"})
+    session_id = kwargs.get("session_id")
+    try:
+        return json.dumps(mgr.request_cancel(request_id, session_id=session_id))
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def peer_group_list(args: dict, **kwargs) -> str:
+    """List persistent groups with member counts (P7.2, G3)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    try:
+        return json.dumps({"groups": mgr.group_list()})
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def peer_group_manage(args: dict, **kwargs) -> str:
+    """Create/add-member/remove-member/delete a persistent group (P7.2)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    action = (args.get("action") or "").strip()
+    session_id = kwargs.get("session_id")
+    try:
+        if action == "create":
+            name = (args.get("name") or "").strip()
+            if not name:
+                return json.dumps({"error": "name is required for create"})
+            return json.dumps(mgr.group_create(name, session_id=session_id))
+        if action in ("add_member", "remove_member"):
+            group_id = (args.get("group_id") or "").strip()
+            member = (args.get("member_agent_id") or "").strip()
+            if not group_id or not member:
+                return json.dumps({"error": "group_id and member_agent_id are required"})
+            if action == "add_member":
+                return json.dumps(mgr.group_add_member(group_id, member, session_id=session_id))
+            return json.dumps(mgr.group_remove_member(group_id, member, session_id=session_id))
+        if action == "delete":
+            group_id = (args.get("group_id") or "").strip()
+            if not group_id:
+                return json.dumps({"error": "group_id is required for delete"})
+            return json.dumps(mgr.group_delete(group_id, session_id=session_id))
+        return json.dumps({"error": f"unknown group action {action!r}"})
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def peer_broadcast(args: dict, **kwargs) -> str:
+    """Broadcast to every live member session of a group (P7.2, G3.5/G3.6)."""
+    mgr, err = _manager_or_error()
+    if err:
+        return json.dumps(err)
+    group_id = (args.get("group_id") or "").strip()
+    message = (args.get("message") or "").strip()
+    if not group_id or not message:
+        return json.dumps({"error": "group_id and message are required"})
+    session_id = kwargs.get("session_id")
+    try:
+        return json.dumps(mgr.broadcast_send(group_id, message, session_id=session_id))
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})

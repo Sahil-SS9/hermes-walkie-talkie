@@ -22,7 +22,7 @@ from .models import Receipt, ReceiptState
 
 logger = logging.getLogger("agent_peer.store")
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -37,13 +37,149 @@ CREATE TABLE IF NOT EXISTS messages (
     reply_to TEXT,
     conversation_id TEXT,
     delivered_at TEXT,
-    hop_count INTEGER NOT NULL DEFAULT 0
+    hop_count INTEGER NOT NULL DEFAULT 0,
+    protocol TEXT NOT NULL DEFAULT 'agent-peer/1'
 );
 CREATE INDEX IF NOT EXISTS idx_messages_recipient_state
     ON messages(recipient_peer_id, state);
 CREATE INDEX IF NOT EXISTS idx_messages_created
     ON messages(created_at);
+CREATE TABLE IF NOT EXISTS groups (
+    group_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    owner_agent_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    peer_id TEXT,
+    PRIMARY KEY (group_id, agent_id),
+    FOREIGN KEY (group_id) REFERENCES groups(group_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS broadcasts (
+    broadcast_id TEXT PRIMARY KEY,
+    sender_agent_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS broadcast_children (
+    broadcast_id TEXT NOT NULL,
+    recipient_agent_id TEXT NOT NULL,
+    resolved_peer_id TEXT NOT NULL,
+    child_message_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (broadcast_id, recipient_agent_id, resolved_peer_id),
+    FOREIGN KEY (broadcast_id) REFERENCES broadcasts(broadcast_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_agent
+    ON group_members(agent_id);
+CREATE INDEX IF NOT EXISTS idx_broadcasts_group
+    ON broadcasts(group_id);
+CREATE TABLE IF NOT EXISTS requests (
+    request_id TEXT PRIMARY KEY,
+    sender_agent_id TEXT NOT NULL,
+    recipient_agent_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    deadline TEXT NOT NULL,
+    idempotency_key TEXT DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
+    parent_request_id TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (sender_agent_id, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS request_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_requests_recipient_state
+    ON requests(recipient_agent_id, state);
+CREATE INDEX IF NOT EXISTS idx_requests_deadline
+    ON requests(deadline);
+CREATE INDEX IF NOT EXISTS idx_request_events_request
+    ON request_events(request_id);
 """
+
+_MIGRATIONS: dict[int, list[str]] = {
+    # v1 -> v2: add protocol column; existing rows default to agent-peer/1
+    # (old records remain readable as V1, P3.6).
+    2: [
+        "ALTER TABLE messages ADD COLUMN protocol TEXT NOT NULL DEFAULT 'agent-peer/1'",
+    ],
+    # v2 -> v3: groups, memberships, broadcasts, children (P4).
+    3: [
+        """CREATE TABLE IF NOT EXISTS groups (
+            group_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            owner_agent_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 0
+        )""",
+        """CREATE TABLE IF NOT EXISTS group_members (
+            group_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            peer_id TEXT,
+            PRIMARY KEY (group_id, agent_id)
+        )""",
+        """CREATE TABLE IF NOT EXISTS broadcasts (
+            broadcast_id TEXT PRIMARY KEY,
+            sender_agent_id TEXT NOT NULL,
+            group_id TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS broadcast_children (
+            broadcast_id TEXT NOT NULL,
+            recipient_agent_id TEXT NOT NULL,
+            resolved_peer_id TEXT NOT NULL,
+            child_message_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (broadcast_id, recipient_agent_id, resolved_peer_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_group_members_agent ON group_members(agent_id)",
+        "CREATE INDEX IF NOT EXISTS idx_broadcasts_group ON broadcasts(group_id)",
+    ],
+    # v3 -> v4: requests + ordered request_events (P5).
+    4: [
+        """CREATE TABLE IF NOT EXISTS requests (
+            request_id TEXT PRIMARY KEY,
+            sender_agent_id TEXT NOT NULL,
+            recipient_agent_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            deadline TEXT NOT NULL,
+            idempotency_key TEXT DEFAULT '',
+            correlation_id TEXT NOT NULL DEFAULT '',
+            parent_request_id TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL DEFAULT '{}',
+            UNIQUE (sender_agent_id, idempotency_key)
+        )""",
+        """CREATE TABLE IF NOT EXISTS request_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            occurred_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_requests_recipient_state ON requests(recipient_agent_id, state)",
+        "CREATE INDEX IF NOT EXISTS idx_requests_deadline ON requests(deadline)",
+        "CREATE INDEX IF NOT EXISTS idx_request_events_request ON request_events(request_id)",
+    ],
+}
 
 
 class MessageStore:
@@ -82,10 +218,26 @@ class MessageStore:
                 "SELECT version FROM schema_version ORDER BY rowid LIMIT 1"
             ).fetchone()
             current = row[0] if row else 0
+            migrated = False
             if current < 1:
+                # Fresh install: the full schema IS the latest version.
                 self._conn.executescript(_SCHEMA)
+                current = _SCHEMA_VERSION
+                migrated = True
+            # Apply incremental migrations idempotently (P3.6). Each step is
+            # its own statement list keyed by target version; re-running is
+            # safe because ALTER ... ADD COLUMN only runs when the recorded
+            # version is below the target.
+            for target in sorted(k for k in _MIGRATIONS if k > current):
+                for statement in _MIGRATIONS[target]:
+                    self._conn.execute(statement)
+                current = target
+                migrated = True
+            if migrated:
+                # Only a writer that changed the schema touches the version
+                # row; a read-only DB that is already current must open clean.
                 self._conn.execute("DELETE FROM schema_version")
-                self._conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+                self._conn.execute("INSERT INTO schema_version (version) VALUES (?)", (current,))
             self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -106,8 +258,8 @@ class MessageStore:
                 """INSERT INTO messages (
                     message_id, recipient_peer_id, sender_peer_id, kind,
                     content, state, created_at, expires_at, reply_to,
-                    conversation_id, delivered_at, hop_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    conversation_id, delivered_at, hop_count, protocol
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO NOTHING""",
                 (
                     row["message_id"],
@@ -122,6 +274,7 @@ class MessageStore:
                     row.get("conversation_id"),
                     row.get("delivered_at"),
                     row.get("hop_count", 0),
+                    row.get("protocol", "agent-peer/1"),
                 ),
             )
             self._conn.commit()
@@ -155,8 +308,8 @@ class MessageStore:
                 """INSERT INTO messages (
                     message_id, recipient_peer_id, sender_peer_id, kind,
                     content, state, created_at, expires_at, reply_to,
-                    conversation_id, delivered_at, hop_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    conversation_id, delivered_at, hop_count, protocol
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     row["message_id"],
                     row["recipient_peer_id"],
@@ -170,6 +323,7 @@ class MessageStore:
                     row.get("conversation_id"),
                     row.get("delivered_at"),
                     row.get("hop_count", 0),
+                    row.get("protocol", "agent-peer/1"),
                 ),
             )
             self._conn.commit()

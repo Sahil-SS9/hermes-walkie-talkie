@@ -1,54 +1,70 @@
-# Verification Record — exact candidates
+# Verification Record — PR #1 reconciliation
 
-All commands below run against the exact final candidate SHAs (P12 freeze):
+This record supersedes historical freeze notes in this directory where they
+conflict with the current pull request.
 
-- hermes-walkie-talkie: 31fb2caf8b99e1a2ceb1b1a3ad5c413a15572210 (branch main) — the commit at which every gate below was run and passed; the repository HEAD may be a later commit that differs only in this packet's own SHA reference (self-reference resolution).
-- hermes-walkie-talkie-core: 5e7a111b3e748b0cfeb463f536ca52ad0db468fd (branch candidate/hermes-walkie-talkie-p1-20260809)
+## Current candidate
 
-## Standalone repository (from /home/kensei/repos/hermes-walkie-talkie)
+- Repository: `Sahil-SS9/hermes-walkie-talkie`
+- Pull request: https://github.com/Sahil-SS9/hermes-walkie-talkie/pull/1
+- Base: `main` at `f6d45194e3a906c13a2449805976d4e151430437`
+- Candidate at reconciliation start: `365ad07d09efb0c15021db1a68fe7b80298ca8d8`
+- Merge state: clean and mergeable at reconciliation start.
 
-| Gate | Command | Result |
-|---|---|---|
-| Unit | `uv run pytest tests/unit -q` | 145 passed (final run) |
-| Integration | `uv run pytest tests/integration -q` | 23 passed |
-| E2E | `uv run pytest tests/e2e -q` | 12 passed; host-surface (4) additionally under PYTHONPATH=core worktree |
-| Security | `uv run pytest tests/security -q` | 22 passed, 1 env skip |
-| Full suite | `uv run pytest -q` | 247 passed, 4 skipped (2 chown env, 2 host-surface run separately) |
-| Lint | `uv run ruff check .` | All checks passed |
-| Types | `uv run ty check agent_peer hermes_peer` | All checks passed |
-| Build | `uv build` | wheel dist/hermes_walkie_talkie-0.1.0rc1-py3-none-any.whl |
-| Coverage | `uv run python scripts/coverage_gate.py` | PASS: 90.0% line; trust/delivery branch 86.7% (163/188) |
-| Install | clone-style install into temp HERMES_HOME + wheel entry point | E2E-909/910 pass; entry point resolves |
-| Demo | `uv run python scripts/demo_two_sessions.py` | PASS: discovery, send, receipt, reply, correlation |
-| Verifier | `uv run python scripts/verify_goal_completion.py --plan <plan>` | PASS (exit 0) at final candidate |
-| Clean | `git status --short` | empty |
+A reconciliation commit after this record changes the candidate SHA. Reviewers
+must take the actual PR head from GitHub, not a historic SHA copied here.
 
-## Hermes core candidate (from /home/kensei/worktrees/hermes-walkie-talkie-core)
+## Direct GitHub evidence
 
-| Gate | Command | Result |
-|---|---|---|
-| Injection tests | pytest tests/hermes_cli/test_plugin_message_injection.py tests/test_tui_gateway_inject.py tests/gateway/test_plugin_message_injection.py | 40 passed |
-| Quick-command regression | pytest tests/cli/test_quick_commands.py | passed (5 exec/redaction/timeout tests) |
-| Full suite (exact candidate) | pytest -q --continue-on-collection-errors | 145 failed (pre-existing baseline set + 1 env test) |
-| Baseline comparison | same suite on baseline worktree @ 3f812796bb | candidate-only failures: 0 genuine (single diff = cron provider-pin, fails identically in isolation on both) |
-| Clean | `git status --short` | empty |
+GitHub Actions run `31723046182` passed every configured PR check:
 
-Note on the full-suite: the baseline commit itself carries pre-existing
-collection errors and failures (verified identical on the pristine base);
-the gate is ZERO candidate-only failures versus the exact base.
+| Area | Evidence |
+|---|---|
+| Python | 3.11–3.13 passed on Ubuntu and macOS |
+| Desktop | build, typecheck, lint and tests passed on Ubuntu, macOS and Windows |
+| Native Windows | named-pipe / SID-DACL / multi-process gate passed on `windows-latest` |
 
-## No-go audit
+The native Windows run is evidence for the Windows transport and ACL gates. It
+does not claim a Windows wheel-install smoke or full Desktop/Electron
+interaction coverage.
 
-Release no-go checklist (plan section 10): all boxes remain unchecked.
-observed_no_go_blockers: 0.
+## Local verification required at the final PR SHA
 
-## Producer QA audit (SEC-1011)
+Run from a clean checkout:
 
-The security, concurrency, recovery and release gates were rerun from a
-clean state by the single executor and recorded in the plan ledger. This is
-producer evidence, not a substitute for the post-goal independent review.
+```bash
+uv run pytest -q
+uv run ruff check .
+uv run ty check agent_peer hermes_peer dashboard
+uv run python scripts/coverage_gate.py
+uv build
+uv run python scripts/verify_wheel_assets.py
+uv run python scripts/verify_v1_1_plus_completion.py
+```
 
-## Completed-plan snapshot
+The deterministic verifier checks its own worktree before and after its test
+and coverage gates, package assets and the committed native-Windows CI marker.
 
-- docs/review/completed-plan.md SHA-256: c16e8b6eb1d36ec881ac934bf145a19b489d0ba91dd2d851cc63cb2ade28c9f3
-- Copied from the live plan after the final verifier pass (PILOT-1208 two-pass finalisation).
+## Hermes host dependency
+
+Walkie Talkie delivers inbound messages through Hermes' public queued injection
+seam. The separate upstream dependency is PR #85279:
+
+https://github.com/NousResearch/hermes-agent/pull/85279
+
+That PR is open and green at the time of reconciliation. Walkie Talkie can be
+merged as a standalone plugin release candidate, but live activation requiring
+queue/steer/interrupt host behaviour remains conditional on #85279 merging or
+the equivalent public Hermes API being available in the installed host.
+
+## Remaining coverage, not hidden blockers
+
+- Windows wheel-install smoke.
+- Full Hermes Desktop/Electron interaction on Windows.
+- Live activation against a Hermes build containing the upstream host seam.
+
+## Release boundary
+
+No tag, package publication or live activation is implied by a merge. Merge is
+the code and evidence decision; release/activation remains an explicit later
+operator action.

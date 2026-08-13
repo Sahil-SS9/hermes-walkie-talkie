@@ -2,10 +2,31 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture
+def tmp_path() -> Iterator[Path]:
+    """Short-path tmp dir for AF_UNIX socket tests.
+
+    pytest's default tmp_path nests under the runner's deep temp dir
+    (e.g. /home/runner/work/.../pytest-of-runner/pytest-0/test_x0/),
+    which exceeds the ~108-byte AF_UNIX sun_path limit on CI runners.
+    Force a SHORT base dir: on Linux and macOS, /tmp is short
+    (macOS TMPDIR points at the long /var/folders/... path). resolve()
+    keeps identity tests consistent with os.getcwd()/realpath on
+    platforms where /tmp or /var/folders is a symlink. Windows has no
+    /tmp and named pipes are not filesystem paths, so it uses the
+    default temp dir (no length limit applies).
+    """
+    base = "/tmp" if os.name == "posix" else tempfile.gettempdir()
+    with tempfile.TemporaryDirectory(prefix="aps-", dir=base) as d:
+        yield Path(d).resolve()
 
 
 @pytest.fixture
@@ -15,7 +36,8 @@ def isolated_runtime(monkeypatch):
     Every test gets its own runtime root so tests never see real peers or
     each other's state.
     """
-    with tempfile.TemporaryDirectory(prefix="agent-peer-test-") as tmp:
+    base = "/tmp" if os.name == "posix" else tempfile.gettempdir()
+    with tempfile.TemporaryDirectory(prefix="agent-peer-test-", dir=base) as tmp:
         runtime = Path(tmp) / "runtime"
         state = Path(tmp) / "state"
         runtime.mkdir(mode=0o700)
@@ -32,3 +54,19 @@ def fresh_state_dir(isolated_runtime):
     """Convenience alias returning just the state directory."""
     _, state = isolated_runtime
     return state
+
+
+_CORE_ROOT = Path(os.environ.get("HERMES_CORE_ROOT", "/home/kensei/worktrees/hermes-walkie-talkie-core-remediation-r2"))
+
+
+@pytest.fixture
+def require_hermes_core():
+    """Skip real-Hermes-process tests when the core checkout is unavailable.
+
+    These e2e tests spawn a genuine Hermes core (the peer plugin's runtime
+    dependency) and are only meaningful where HERMES_CORE_ROOT exists — the
+    dev box or a CI job that provisions the checkout. On runners without it,
+    skip cleanly instead of failing on a hardcoded path.
+    """
+    if not _CORE_ROOT.exists():
+        pytest.skip(f"HERMES_CORE_ROOT missing: {_CORE_ROOT}")
