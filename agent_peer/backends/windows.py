@@ -257,9 +257,18 @@ class WindowsTransportBackend:
         user_sid = self._current_user_sid(ns)
         try:
             client_pid = ns["win32pipe"].GetNamedPipeClientProcessId(connection)
-            token = ns["win32security"].OpenProcessToken(
-                client_pid, ns["win32security"].TOKEN_QUERY
+            # OpenProcessToken needs a process HANDLE, not a PID.
+            process = ns["win32api"].OpenProcess(
+                ns["win32security"].PROCESS_QUERY_INFORMATION,
+                False,
+                client_pid,
             )
+            try:
+                token = ns["win32security"].OpenProcessToken(
+                    process, ns["win32security"].TOKEN_QUERY
+                )
+            finally:
+                process.Close()
             try:
                 client_sid = ns["win32security"].GetTokenInformation(
                     token, ns["win32security"].TokenUser
