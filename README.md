@@ -57,6 +57,23 @@ Tell backend that tenant_id replaced account_id and ask whether the migration is
 
 The agent can use `peer_list_agents`, `peer_send_message` and `peer_read_inbox` to find the other session, send the note and read the response.
 
+## How a message moves
+
+```mermaid
+flowchart LR
+    A[Hermes session A\narchitect] -->|1. discover / resolve peer| R[Local peer registry]
+    A -->|2. send message or request| T[Same-user local transport\nUnix socket or Windows named pipe]
+    T -->|3. queue-safe delivery| B[Hermes session B\nbackend]
+    B -->|4. inbox, reply or request update| T
+    T -->|5. receipt / reply| A
+    A -. group broadcast .-> G[Named group]
+    G --> T
+```
+
+Each session owns its own runtime. There is no central coordinator in the
+message path. If a recipient is busy, delivery is held and released through the
+host's queue-safe boundary instead of interrupting an active turn.
+
 For a transport-only demonstration with no API keys or Hermes install:
 
 ```bash
@@ -148,7 +165,7 @@ npm run build
 
 ## Status
 
-V1.1 is an open release candidate in [PR #1](https://github.com/Sahil-SS9/hermes-walkie-talkie/pull/1). The code and CI are green. A merge does not publish the package, install the plugin or activate it in a live profile.
+V1.1 is merged. The code and CI are green. A merge does not publish the package, install the plugin or activate it in a live profile.
 
 ## License
 
