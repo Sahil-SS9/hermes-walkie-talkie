@@ -55,9 +55,15 @@ function registerPlugin(sdk: HermesPluginSDK): void {
     const ref = useRef(null);
     useEffect(() => {
       if (ref.current) {
-        // Clear any previous content and mount the vanilla-DOM app
+        // Clear any previous content and mount the vanilla-DOM app.
+        // initApp now returns a disposer; invoke it in the effect cleanup
+        // so all listeners, timers, and the WS subscription are torn down
+        // when the component unmounts (tab switch, plugin unload, etc.).
         ref.current.innerHTML = '';
-        initApp(sdk, ref.current);
+        const dispose = initApp(sdk, ref.current);
+        return () => {
+          try { dispose(); } catch { /* ignore */ }
+        };
       }
     }, []);
     return React.createElement('div', { ref, className: 'wt-dashboard' });

@@ -47,7 +47,7 @@ function badgeClass(status: string): string {
 // initApp
 // ---------------------------------------------------------------------------
 
-export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
+export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void {
   const api = createApi(sdk);
 
   // Initial theme
@@ -77,6 +77,11 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
   let activePeerEl: HTMLElement | null = null;
   let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // ── Resource tracking for cleanup ──────────────────────────────────
+  const docClickHandlers: Array<(e: MouseEvent) => void> = [];
+  const docKeyHandlers: Array<(e: KeyboardEvent) => void> = [];
+  let offEvents: (() => void) | null = null;
+
   function scheduleInspectorHide(): void {
     if (inspectorHideTimer) clearTimeout(inspectorHideTimer);
     inspectorHideTimer = setTimeout(() => {
@@ -101,11 +106,14 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
   shell.className = 'wt-shell';
   root.appendChild(shell);
 
-  // Header — pass sdk for profile label
+  // Header — pass sdk for profile label, and a callback to track the
+  // document click handler for cleanup.
   const header = renderHeader(state, sdk, (themeId) => {
     state.activeTheme = themeId;
     setStoredTheme(themeId);
     applyTheme(getThemeById(themeId));
+  }, (handler) => {
+    docClickHandlers.push(handler);
   });
   shell.appendChild(header);
 
@@ -247,8 +255,8 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
     updateUI();
   }
 
-  // Wire up events socket
-  const offEvents = api.onEvents(() => {
+  // Wire up events socket — store the disposer for cleanup.
+  offEvents = api.onEvents(() => {
     refresh();
   });
 
@@ -454,10 +462,34 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): void {
   // Initial load
   refresh();
 
-  // Cleanup on unload
-  window.addEventListener('beforeunload', () => {
-    offEvents();
-  });
+  // ── Disposer — cleans all resources on unmount ─────────────────────
+  return () => {
+    // Clear timers
+    if (inspectorHideTimer) { clearTimeout(inspectorHideTimer); inspectorHideTimer = null; }
+    if (copyFeedbackTimer) { clearTimeout(copyFeedbackTimer); copyFeedbackTimer = null; }
+
+    // Close WebSocket / event subscription
+    if (offEvents) {
+      try { offEvents(); } catch { /* ignore */ }
+      offEvents = null;
+    }
+
+    // Remove document-level click handlers (theme popover, etc.)
+    for (const h of docClickHandlers) {
+      document.removeEventListener('click', h);
+    }
+    docClickHandlers.length = 0;
+
+    // Remove document-level key handlers
+    for (const h of docKeyHandlers) {
+      document.removeEventListener('keydown', h);
+    }
+    docKeyHandlers.length = 0;
+
+    // Clear the root element
+    root.innerHTML = '';
+    root.className = '';
+  };
 }
 
 // ---------------------------------------------------------------------------

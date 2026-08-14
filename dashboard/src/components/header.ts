@@ -1,15 +1,21 @@
 /**
  * Header component — transmission icon, brand, theme picker, profile badge.
  *
- * Profile label is read from the host SDK (sdk.api.getProfile?.() or
- * falls back to "hermes-peer").
+ * Profile label is read from the host SDK's public
+ * ``sdk.api.getActiveProfile()`` (async, returns ``{current, active}``).
+ * Falls back to "hermes-peer" when the host API is unavailable or fails.
  */
 
 import type { AppState } from '../types';
 import type { HermesPluginSDK } from '../api';
 import { THEMES } from '../theme';
 
-export function renderHeader(state: AppState, sdk: HermesPluginSDK, onThemeChange: (id: string) => void): HTMLElement {
+export function renderHeader(
+  state: AppState,
+  sdk: HermesPluginSDK,
+  onThemeChange: (id: string) => void,
+  onDocClick?: (handler: (e: MouseEvent) => void) => void,
+): HTMLElement {
   const header = document.createElement('header');
   header.className = 'wt-header';
 
@@ -67,26 +73,42 @@ export function renderHeader(state: AppState, sdk: HermesPluginSDK, onThemeChang
     e.stopPropagation();
     themePop.classList.toggle('show');
   };
-  document.addEventListener('click', () => themePop.classList.remove('show'));
+
+  // Document click handler to close theme popover — registered via the
+  // disposer callback so the app can clean it up on unmount.
+  const docClickHandler = () => themePop.classList.remove('show');
+  document.addEventListener('click', docClickHandler);
+  if (onDocClick) onDocClick(docClickHandler);
 
   header.appendChild(themeBtn);
   header.appendChild(themePop);
 
-  // Profile badge — read from host SDK
-  let profileLabel = 'hermes-peer';
-  try {
-    // The host SDK may expose the active profile via api.getProfile()
-    if (typeof sdk.api.getProfile === 'function') {
-      const p = sdk.api.getProfile();
-      if (p && typeof p === 'string') profileLabel = p;
-    }
-  } catch { /* use fallback */ }
-
+  // Profile badge — async read from the host SDK's public getActiveProfile().
+  // The real SDK exposes ``sdk.api.getActiveProfile(): Promise<{current, active}>``
+  // (see KenseiAgent web/src/lib/api.ts).  There is no ``getProfile`` method.
   const profileBtn = document.createElement('button');
   profileBtn.className = 'wt-header-btn';
-  profileBtn.textContent = profileLabel;
+  profileBtn.textContent = '…';
   profileBtn.setAttribute('aria-label', 'Current profile');
   header.appendChild(profileBtn);
+
+  // Resolve the active profile asynchronously.
+  (async () => {
+    let label = 'hermes-peer'; // intentional fallback
+    try {
+      if (typeof sdk.api.getActiveProfile === 'function') {
+        const info: any = await sdk.api.getActiveProfile();
+        if (info && typeof info.active === 'string' && info.active) {
+          label = info.active;
+        } else if (info && typeof info.current === 'string' && info.current) {
+          label = info.current;
+        }
+      }
+    } catch {
+      // Host API unavailable or failed — keep the intentional fallback.
+    }
+    profileBtn.textContent = label;
+  })();
 
   return header;
 }

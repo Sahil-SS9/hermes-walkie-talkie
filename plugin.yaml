@@ -8,3 +8,9 @@ entry: __init__.py
 # plugin API (register_tool, register_command, register_hook, inject_message).
 requires:
   - hermes >= 0.0.0
+# Version note: the dashboard tab manifest (dashboard/manifest.json) and npm
+# package (dashboard/package.json) are at 0.2.0 — the dashboard frontend has
+# had more iteration cycles than the plugin core. The plugin.yaml version
+# (0.1.0rc1) is the overall Walkie-Talkie release candidate. These are
+# intentionally independent: the dashboard tab can rev without a plugin release
+# and vice versa. Align them only when cutting a unified release.

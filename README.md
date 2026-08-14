@@ -140,6 +140,7 @@ npm run build
 - [Groups and broadcasts](docs/groups-and-broadcasts.md)
 - [Structured request workflows](docs/request-workflows.md)
 - [Desktop plugin](docs/desktop.md)
+- [Dashboard plugin](docs/dashboard-plugin.md)
 - [Windows support](docs/windows.md)
 - [Operations](docs/operations.md)
 - [Compatibility](docs/compatibility.md)
