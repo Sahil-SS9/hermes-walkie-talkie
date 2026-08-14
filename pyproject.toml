@@ -44,7 +44,7 @@ packages = ["agent_peer", "agent_peer.backends", "hermes_peer", "dashboard"]
 [tool.setuptools.package-data]
 hermes_peer = ["../plugin.yaml", "assets/desktop/*.js", "assets/desktop/*.css"]
 agent_peer = ["py.typed"]
-dashboard = ["manifest.json", "plugin_api.py"]
+dashboard = ["manifest.json", "plugin_api.py", "dist/*.js", "dist/*.css", "dist/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

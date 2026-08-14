@@ -36,24 +36,22 @@ The wheel (`hermes_walkie_talkie-*.whl`) includes `dashboard/dist/` and
 
 ## Install
 
-### From a local checkout
+The Hermes plugin CLI accepts a Git URL or an `owner/repo` shorthand. For
+this repository:
 
 ```bash
-hermes plugins install /path/to/hermes-walkie-talkie
+hermes plugins install Sahil-SS9/hermes-walkie-talkie --enable
 ```
 
-This copies the plugin into `~/.hermes/hermes-agent/plugins/hermes-peer/`.
-The dashboard auto-discovers `dashboard/manifest.json` inside the plugin
-directory.
+This installs the plugin under the active Hermes home, normally
+`~/.hermes/plugins/hermes-peer/`. The dashboard discovers
+`dashboard/manifest.json` inside that plugin directory.
 
-### From a wheel (pip)
+`pip install hermes-walkie-talkie` installs the Python distribution, but it
+does **not** install a Dashboard plugin into `~/.hermes/plugins/`. Use
+`hermes plugins install` for Dashboard discovery.
 
-```bash
-pip install hermes-walkie-talkie
-```
-
-The wheel places the plugin under the Hermes plugins directory. After
-install, Hermes must rescan:
+After installation, verify:
 
 ```bash
 hermes plugins list          # verify hermes-peer appears
@@ -61,8 +59,7 @@ hermes plugins list          # verify hermes-peer appears
 
 ## Enable & rescan
 
-Plugins installed from a local path are enabled by default. If the plugin
-shows as disabled:
+If the plugin shows as disabled:
 
 ```bash
 hermes plugins enable hermes-peer
@@ -73,7 +70,7 @@ running, restart it:
 
 ```bash
 hermes dashboard --stop
-hermes dashboard --host 0.0.0.0 --insecure --tui --no-open --skip-build
+hermes dashboard --no-open
 ```
 
 After restart, the **Walkie-Talkie** tab appears in the dashboard sidebar
@@ -114,14 +111,14 @@ duplicate state.
 | Inbox | ✅ | Message list with receipt detail modal |
 | Requests | ✅ | Structured request list with detail modal |
 | Health | ✅ | Backend, live peers, pending/held counts, problems |
-| Theme persistence | ✅ | 8 themes (Ember Relay + 7 local), persisted in `localStorage` |
+| Theme persistence | ✅ | 7 themes including Ember Relay, persisted in `localStorage` |
 | Speech-to-text | ⚠️ | UI present with explicit "unavailable" fallback; no live STT |
 | Control Room | ⚠️ | Attention banner only (held/pending counts); no deep-link actions |
 
 ### Theme persistence
 
 The selected theme is stored in `localStorage` under the key
-`wt-dashboard-theme`. It survives tab switches, page reloads, and dashboard
+`walkie-talkie-theme`. It survives tab switches, page reloads, and dashboard
 restarts. The default is **Ember Relay**.
 
 ### STT limitation
@@ -162,7 +159,7 @@ dashboard.
 ### Verify the frontend bundle is served
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}" http://localhost:9119/dashboard-plugins/hermes-peer/index.js
+curl -s -o /dev/null -w "%{http_code}" http://localhost:9119/dashboard-plugins/hermes-peer/dist/index.js
 ```
 
 Expected: `200`. A 404 means the `dist/` directory is missing or the
@@ -184,7 +181,7 @@ open DevTools (F12). Look for:
 
 1. Confirm the plugin is enabled: `hermes plugins list`
 2. Confirm `manifest.json` exists at the expected path:
-   `ls ~/.hermes/hermes-agent/plugins/hermes-peer/dashboard/manifest.json`
+   `ls ~/.hermes/plugins/hermes-peer/dashboard/manifest.json`
 3. Restart the dashboard
 4. Check dashboard startup logs for plugin scan errors
 
@@ -194,7 +191,7 @@ open DevTools (F12). Look for:
 hermes plugins remove hermes-peer
 ```
 
-This removes the plugin directory from `~/.hermes/hermes-agent/plugins/`.
+This removes the plugin directory from `~/.hermes/plugins/`.
 The dashboard tab disappears on next restart.
 
 To also remove the Python package:

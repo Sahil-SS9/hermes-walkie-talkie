@@ -1049,4 +1049,45 @@ describe('Behaviour-level DOM interaction tests', () => {
 
     testDom.window.close();
   });
+
+  // -----------------------------------------------------------------------
+  // Test 22: Modal Escape handler participates in the app disposer
+  // -----------------------------------------------------------------------
+
+  it('disposer removes the modal Escape key handler', async () => {
+    const testDom = new JSDOM('<!DOCTYPE html><html><head></head><body><div id="root"></div></body></html>', {
+      url: 'http://localhost/',
+      runScripts: 'dangerously',
+      resources: 'usable',
+    });
+    testDom.window.Response = class Response {
+      constructor(body, init) { this._body = body; this.status = init?.status || 200; }
+      json() { return Promise.resolve(JSON.parse(this._body)); }
+      text() { return Promise.resolve(this._body); }
+    };
+    testDom.window.navigator.clipboard = { writeText: async () => {} };
+
+    const removedKeydownHandlers = [];
+    const removeEventListener = testDom.window.document.removeEventListener.bind(testDom.window.document);
+    testDom.window.document.removeEventListener = (type, handler, options) => {
+      if (type === 'keydown') removedKeydownHandlers.push(handler);
+      return removeEventListener(type, handler, options);
+    };
+
+    const testMock = createMockSDK();
+    testDom.window.__HERMES_PLUGIN_SDK__ = testMock.sdk;
+    testDom.window.__HERMES_PLUGINS__ = testMock.registry;
+    try { testDom.window.eval(readFileSync(BUNDLE_PATH, 'utf-8')); } catch (err) {
+      if (!err.message?.includes('WebSocket')) throw err;
+    }
+    testDom.window.document.dispatchEvent(new testDom.window.Event('DOMContentLoaded', { bubbles: true }));
+    await wait(50);
+
+    const dispose = testDom.window.__wt_initApp(testMock.sdk, testDom.window.document.getElementById('root'));
+    await wait(100);
+    dispose();
+
+    assert.ok(removedKeydownHandlers.length > 0, 'dispose must remove the modal Escape key handler');
+    testDom.window.close();
+  });
 });

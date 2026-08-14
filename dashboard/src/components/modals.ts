@@ -4,7 +4,10 @@
 
 import type { Api } from '../api';
 
-export function renderModals(api: Api): HTMLElement {
+export function renderModals(
+  api: Api,
+  onDocumentKeydown?: (handler: (event: KeyboardEvent) => void) => void,
+): HTMLElement {
   const overlay = document.createElement('div');
   overlay.className = 'wt-overlay';
   overlay.id = 'wt-overlay';
@@ -35,9 +38,11 @@ export function renderModals(api: Api): HTMLElement {
   overlay.onclick = (e) => {
     if (e.target === overlay) overlay.classList.remove('show');
   };
-  document.addEventListener('keydown', (e) => {
+  const documentKeydownHandler = (e: KeyboardEvent) => {
     if (e.key === 'Escape') overlay.classList.remove('show');
-  });
+  };
+  document.addEventListener('keydown', documentKeydownHandler);
+  onDocumentKeydown?.(documentKeydownHandler);
 
   return overlay;
 }

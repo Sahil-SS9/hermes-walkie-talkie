@@ -4,7 +4,7 @@
 Checks the most recently built wheel in dist/ for:
 - Python packages agent_peer + hermes_peer (+ py.typed)
 - the plugin manifest plugin.yaml
-- dashboard manifest.json + plugin_api.py
+- dashboard manifest.json + plugin_api.py + compiled Dashboard bundle
 - compiled Desktop bundle plugin.js + style.css (assets/desktop)
 
 Exit 0 on success, 1 on any missing asset.
@@ -30,6 +30,9 @@ REQUIRED = (
     "hermes_peer/assets/desktop/style.css",
     "dashboard/manifest.json",
     "dashboard/plugin_api.py",
+    "dashboard/dist/index.js",
+    "dashboard/dist/style.css",
+    "dashboard/dist/build-meta.json",
 )
 
 

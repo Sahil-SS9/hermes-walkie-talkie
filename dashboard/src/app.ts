@@ -138,7 +138,9 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
   layout.appendChild(workspace);
 
   // Modals
-  const modals = renderModals(api);
+  const modals = renderModals(api, (handler) => {
+    docKeyHandlers.push(handler);
+  });
   shell.appendChild(modals);
 
   // Speech-to-text

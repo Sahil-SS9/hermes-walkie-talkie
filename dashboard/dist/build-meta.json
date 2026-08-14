@@ -37,7 +37,7 @@
       "format": "esm"
     },
     "src/components/modals.ts": {
-      "bytes": 1213,
+      "bytes": 1410,
       "imports": [],
       "format": "esm"
     },
@@ -47,7 +47,7 @@
       "format": "esm"
     },
     "src/app.ts": {
-      "bytes": 25813,
+      "bytes": 25867,
       "imports": [
         {
           "path": "src/api.ts",
@@ -120,7 +120,7 @@
     }
   },
   "bytes": {
-    "js": 24382,
+    "js": 24414,
     "css": 11600
   }
 }
