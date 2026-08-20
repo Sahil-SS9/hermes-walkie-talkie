@@ -266,6 +266,18 @@
 }
 
 .wt-rail-count { color: var(--signal); font-weight: 700; }
+.wt-rail-active { color: var(--safe); font-weight: 700; }
+.wt-rail-idle { color: var(--quiet); font-weight: 700; }
+.wt-rail-off { color: var(--danger); font-weight: 700; }
+
+/* Liveness line (G5) — `● Live · updated 2s ago`, `.off` when reconnecting */
+.wt-live {
+  font-size: 11px;
+  color: var(--safe);
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
+.wt-live.off { color: var(--danger); }
 
 .wt-peer-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 
@@ -282,6 +294,13 @@
 
 .wt-peer-item:hover { background: var(--surface-raised); }
 .wt-peer-item.active { background: color-mix(in srgb, var(--signal) 12%, var(--surface)); }
+
+/* G3: the local session row — mockup `.item.me` */
+.wt-peer-item.me { background: color-mix(in srgb, var(--signal) 12%, var(--surface)); }
+/* G6: offline rows are dimmed — mockup `.item.off` */
+.wt-peer-item.off { opacity: 0.5; }
+/* G8: selected row in the expanded panel — mockup `.item.sel` */
+.wt-peer-item.sel { outline: 1px solid var(--signal); background: var(--surface-raised); }
 
 .wt-peer-avatar {
   width: 32px;
@@ -301,16 +320,45 @@
 .wt-peer-info b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wt-peer-info small { font-size: 11px; color: var(--quiet); }
 
+/* G3: `you` pill next to the local session name — mockup `.you` */
+.wt-you {
+  font-size: 9px;
+  background: var(--signal);
+  color: #0b0b0b;
+  padding: 1px 5px;
+  border-radius: 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* G4: per-peer activity line — mockup `.act` (+ `.act.g` when working) */
+.wt-act {
+  display: block;
+  color: var(--quiet);
+  font-size: 11px;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wt-act.g { color: var(--safe); }
+
+/* G1: presence dot mapping — real enum → colour. Mockup `.dot.g/.a/.q/.r` */
 .wt-presence {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: var(--quiet);
   flex-shrink: 0;
   margin-left: auto;
 }
-
-.wt-presence.active { background: var(--safe); }
+.wt-presence.dot.g { background: var(--safe); box-shadow: 0 0 6px color-mix(in srgb, var(--safe) 60%, transparent); }
+.wt-presence.dot.a { background: var(--hold); box-shadow: 0 0 6px color-mix(in srgb, var(--hold) 60%, transparent); }
+.wt-presence.dot.q { background: var(--quiet); }
+.wt-presence.dot.r { background: var(--danger); }
+.wt-presence.active { background: var(--safe); } /* legacy alias */
 
 /* Peer inspector popover */
 .wt-inspector {

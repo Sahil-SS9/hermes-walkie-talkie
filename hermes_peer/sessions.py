@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from datetime import UTC
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from agent_peer.models import (
 )
 from agent_peer.paths import RuntimePaths, select_runtime_dir, select_state_dir
 from agent_peer.policy import PolicyEngine
+from agent_peer.presence import PresenceManager
 from agent_peer.registry import Registry
 from agent_peer.runtime import PeerHandle, PeerRuntimeManager
 from agent_peer.store import MessageStore
@@ -41,6 +43,21 @@ from agent_peer.store import MessageStore
 from .config import PeerConfig
 
 logger = logging.getLogger("hermes_peer.sessions")
+
+
+def _pid_alive(pid: int) -> bool:
+    """True when a process with the given PID is running (signal 0 probe)."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    except OSError:
+        return False
+    return True
 
 
 def _surface_of(platform: str | None) -> str:
@@ -99,6 +116,58 @@ class PeerSessionManager:
 
         self._metrics = MetricsRegistry()
         self._events = EventBroker()
+
+        # X1 (G6 liveness): a bounded background heartbeat pump so freshness
+        # reflects real liveness, not turn boundaries. Writes at most once per
+        # HEARTBEAT_INTERVAL per live session; one daemon thread for the whole
+        # manager, stopped in shutdown().
+        self._presence: dict[str, PresenceManager] = {}
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
+        self._start_heartbeat_thread()
+
+    # ------------------------------------------------------------------
+    # X1 heartbeat pump (G6 liveness)
+    # ------------------------------------------------------------------
+
+    def _start_heartbeat_thread(self) -> None:
+        """Spawn the bounded heartbeat pump (daemon, one per manager)."""
+        if self._heartbeat_thread is not None:
+            return
+        self._heartbeat_stop.clear()
+        thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name="hermes-peer-heartbeat",
+            daemon=True,
+        )
+        self._heartbeat_thread = thread
+        thread.start()
+
+    def _heartbeat_loop(self) -> None:
+        """Write heartbeats for live sessions at a bounded cadence."""
+        from agent_peer.constants import HEARTBEAT_INTERVAL
+
+        while not self._heartbeat_stop.wait(HEARTBEAT_INTERVAL):
+            for session_id, pm in list(self._presence.items()):
+                try:
+                    pm.heartbeat()
+                except Exception:
+                    logger.debug("hermes-peer: heartbeat failed for %s", session_id, exc_info=True)
+
+    def _ensure_presence(self, session_id: str, peer_id: str) -> None:
+        """Create the PresenceManager for a session if missing (X1)."""
+        existing = self._presence.get(session_id)
+        if existing is None or existing._peer_id != peer_id:
+            self._presence[session_id] = PresenceManager(self._registry, peer_id)
+
+    def _drop_presence(self, session_id: str) -> None:
+        self._presence.pop(session_id, None)
+
+    def _stop_heartbeat_thread(self) -> None:
+        self._heartbeat_stop.set()
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=2.0)
+            self._heartbeat_thread = None
 
     # ------------------------------------------------------------------
     # V2 stable identity (G2.3, P3.2)
@@ -175,6 +244,7 @@ class PeerSessionManager:
         self._peers[session_id] = bound
         self._session_to_peer[session_id] = bound.peer_id
         self._peer_handles[bound.peer_id] = handle
+        self._ensure_presence(session_id, bound.peer_id)
         if alias_override:
             self._aliases.set_alias(bound.peer_id, alias_override)
         logger.info("hermes-peer: opened peer %s (%s) on %s", bound.name, bound.peer_id, surface)
@@ -185,24 +255,26 @@ class PeerSessionManager:
         Registration is owned by on_session_open; this hook only maps the
         turn lifecycle to presence (F-09/REM-308). A legacy host that fires
         on_session_start without on_session_open still registers on first
-        start (backwards compatible).
+        start (backwards compatible). An optional ``activity`` note (G4) is
+        threaded into the record; status is never mutated for activity.
         """
+        activity = kwargs.pop("activity", None)
         existing = self._session_to_peer.get(session_id)
         if existing is not None:
-            self._set_presence(session_id, Presence.WORKING)
+            self._set_presence(session_id, Presence.WORKING, activity=activity)
             return
         # Legacy host: no on_session_open fired — register here (idle then
         # immediately working) to preserve the old contract.
         self.on_session_open(session_id, platform=platform, **kwargs)
         if self._session_to_peer.get(session_id) is not None:
-            self._set_presence(session_id, Presence.WORKING)
+            self._set_presence(session_id, Presence.WORKING, activity=activity)
 
-    def _set_presence(self, session_id: str, status: Presence) -> None:
+    def _set_presence(self, session_id: str, status: Presence, *, activity: str | None = None) -> None:
         """Fence and synchronise registry/runtime/session metadata."""
         rec = self._peers.get(session_id)
         if rec is None:
             return
-        updated = self._registry.update_presence(rec.peer_id, status, expected=rec)
+        updated = self._registry.update_presence(rec.peer_id, status, current_activity=activity, expected=rec)
         if updated is None:
             return
         self._runtime.update_record(updated)
@@ -210,7 +282,9 @@ class PeerSessionManager:
 
     def on_session_end(self, session_id: str, platform: str | None = None, **kwargs) -> None:
         if self._session_to_peer.get(session_id) is not None:
-            self._set_presence(session_id, Presence.IDLE)
+            # C2/H1: idle clears the activity note so the UI never shows a
+            # stale WORKING-era task ("idle · scanning arxiv").
+            self._set_presence(session_id, Presence.IDLE, activity="")
 
     def on_session_reset(self, session_id: str, platform: str | None = None, **kwargs) -> None:
         """Session rotation: close the EXACT old registration, register the new id.
@@ -262,9 +336,11 @@ class PeerSessionManager:
             handle.close()
         self._peers.pop(session_id, None)
         self._session_policies.pop(peer_id, None)
+        self._drop_presence(session_id)
         logger.info("hermes-peer: removed peer for session %s (%s)", session_id, reason)
 
     def shutdown(self) -> None:
+        self._stop_heartbeat_thread()
         for session_id in list(self._session_to_peer.keys()):
             self.on_session_finalize(session_id, reason="plugin_shutdown")
         self._runtime.shutdown()
@@ -344,6 +420,89 @@ class PeerSessionManager:
 
     def peer_id_for_session(self, session_id: str) -> str | None:
         return self._session_to_peer.get(session_id)
+
+    def my_peer_id(self, session_id: str | None = None) -> str | None:
+        """The local session's peer_id (the "you" identity, G3).
+
+        Uses the explicit session-selection seam: the exact session when
+        named, or the single active session. Returns None when no session is
+        registered (or the selection is ambiguous) — never raises, so
+        read-only summary surfaces stay resilient.
+        """
+        try:
+            rec = self.resolve_session(session_id)
+        except ValueError:
+            return None
+        return rec.peer_id
+
+    def summary(self, *, include_self: bool = True) -> dict:
+        """Aggregate presence summary for the rail/status chrome (G2, G5, G6).
+
+        Single data source for every ambient surface. The pool is scoped to
+        RECORDS WHOSE PID IS ALIVE — stale registry files from dead processes
+        are excluded so the totals reflect real running sessions, not
+        accumulated history. Among alive-PID records:
+          - live    = probe-live AND status working/held (actively working)
+          - idle    = probe-live AND status idle (running but not working)
+          - offline = PID alive but the socket probe failed (rare)
+        ``record.status`` is never mutated (the ALIVE probe compares
+        identity['status'] exactly). active_count/offline_count stay
+        backward-compatible; idle_count is added.
+        """
+        records = self.list_peers(include_self=include_self)
+        # PID-liveness filter: drop stale registry files whose process is dead.
+        snapshot = [
+            r for r in self._registry.list_peers()
+            if r.pid and _pid_alive(r.pid)
+        ]
+        if not include_self:
+            snapshot = [r for r in snapshot if r.peer_id not in self._peer_handles]
+        live_ids = {r.peer_id for r in records}
+        peers: list[dict] = []
+        total = len(snapshot)
+        active = 0
+        idle = 0
+        offline = 0
+        last_updated = ""
+        for record in snapshot:
+            is_offline = record.peer_id not in live_ids
+            is_active = (
+                not is_offline
+                and record.status in (Presence.WORKING.value, Presence.HELD.value)
+            )
+            if is_offline:
+                offline += 1
+            elif is_active:
+                active += 1
+            else:
+                idle += 1
+            if record.last_seen and record.last_seen > last_updated:
+                last_updated = record.last_seen
+            peers.append(
+                {
+                    "peer_id": record.peer_id,
+                    "agent_id": record.agent_id,
+                    "name": record.name,
+                    "profile": record.profile,
+                    "surface": record.surface,
+                    "status": record.status,
+                    "offline": is_offline,
+                    "status_label": "offline" if is_offline else record.status,
+                    "current_activity": record.current_activity,
+                    "cwd": record.cwd,
+                    "git_branch": record.git_branch,
+                    "last_seen": record.last_seen,
+                }
+            )
+        return {
+            "total": total,
+            "active_count": active,
+            "idle_count": idle,
+            "offline_count": offline,
+            "you_peer_id": self.my_peer_id(),
+            "last_updated": last_updated,
+            "peers": peers,
+        }
 
     def _make_envelope(self, *, recipient: str, content: str, reply_to: str | None = None, kind: Kind = Kind.MESSAGE, conversation_id: str | None = None, session_id: str | None = None) -> Envelope:
         """Build a validated outbound envelope from the EXACT session (F-03).

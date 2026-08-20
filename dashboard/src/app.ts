@@ -15,7 +15,7 @@ import type { AppState } from './types';
 import { applyTheme, getStoredTheme, getThemeById, setStoredTheme } from './theme';
 import { renderHeader } from './components/header';
 import { renderControlRoom } from './components/control-room';
-import { renderPeerRail } from './components/peer-rail';
+import { renderPeerRail, renderEyebrow, isPeerOffline, offlineSet, liveLabel } from './components/peer-rail';
 import { renderWorkspace } from './components/workspace';
 import { renderModals } from './components/modals';
 import { renderSpeechToText } from './components/speech-to-text';
@@ -27,7 +27,10 @@ import { renderSpeechToText } from './components/speech-to-text';
 const BADGE_CLASS_MAP: Record<string, string> = {
   active: 'wt-badge-active',
   idle: 'wt-badge-idle',
+  working: 'wt-badge-active',
   held: 'wt-badge-held',
+  closing: 'wt-badge-held',
+  offline: 'wt-badge-error',
   pending: 'wt-badge-pending',
   error: 'wt-badge-error',
   refused: 'wt-badge-refused',
@@ -41,6 +44,31 @@ const BADGE_FALLBACK = 'wt-badge-idle';
 function badgeClass(status: string): string {
   const key = (status || '').toLowerCase().trim();
   return BADGE_CLASS_MAP[key] || BADGE_FALLBACK;
+}
+
+// ---------------------------------------------------------------------------
+// Presence dot mapping (G1) — real Presence enum + derived offline state.
+//   working -> green (.g) · held/closing -> amber (.a) · idle -> grey (.q)
+//   offline -> red (.r)
+// ---------------------------------------------------------------------------
+
+const DOT_CLASS_MAP: Record<string, string> = {
+  working: 'g',
+  held: 'a',
+  closing: 'a',
+  idle: 'q',
+  offline: 'r',
+};
+
+function dotClass(status: string, offline: boolean): string {
+  if (offline) return 'r';
+  return DOT_CLASS_MAP[(status || '').toLowerCase().trim()] || 'q';
+}
+
+/** Status label shown in the rail (G6): offline peers read "offline", not
+ *  their frozen last status. */
+function statusLabel(status: string, offline: boolean): string {
+  return offline ? 'offline' : (status || 'idle');
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +91,9 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
     inbox: [],
     groups: [],
     health: null,
+    summary: null,
+    youPeerId: null,
+    wsState: 'connecting',
     activeTab: 'peers',
     activeTheme: stored,
     lastUpdated: null,
@@ -235,47 +266,90 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
   async function refresh(): Promise<void> {
     state.loading = true;
     updateUI();
-    try {
-      const [peersRes, requestsRes, inboxRes, groupsRes, healthRes] = await Promise.all([
-        api.peers(),
-        api.requests(),
-        api.inbox(),
-        api.groups(),
-        api.health(),
-      ]);
-      state.peers = peersRes.peers;
-      state.requests = requestsRes.requests;
-      state.inbox = inboxRes.messages;
-      state.groups = groupsRes.groups;
-      state.health = healthRes;
-      state.error = null;
-      state.lastUpdated = Date.now();
-    } catch (err: any) {
-      state.error = String(err?.message || err);
+    // H5: allSettled so a missing/404 endpoint (e.g. version skew where the
+    // backend lacks /peers/summary) degrades to partial data instead of
+    // blanking the whole peers surface.
+    const settled = await Promise.allSettled([
+      api.peers(),
+      api.requests(),
+      api.inbox(),
+      api.groups(),
+      api.health(),
+      api.summary(),
+    ]);
+    const [peersRes, requestsRes, inboxRes, groupsRes, healthRes, summaryRes] = settled;
+    if (peersRes.status === 'fulfilled') state.peers = peersRes.value.peers;
+    if (requestsRes.status === 'fulfilled') state.requests = requestsRes.value.requests;
+    if (inboxRes.status === 'fulfilled') state.inbox = inboxRes.value.messages;
+    if (groupsRes.status === 'fulfilled') state.groups = groupsRes.value.groups;
+    if (healthRes.status === 'fulfilled') state.health = healthRes.value;
+    if (summaryRes.status === 'fulfilled') {
+      state.summary = summaryRes.value;
+      state.youPeerId = summaryRes.value.you_peer_id || null;
+    }
+    const failed = settled.filter((r) => r.status === 'rejected');
+    const firstErr = failed[0] && 'reason' in failed[0]
+      ? String((failed[0] as PromiseRejectedResult).reason?.message ?? (failed[0] as PromiseRejectedResult).reason)
+      : '';
+    state.error = failed.length > 0
+      ? `${failed.length} endpoint(s) failed${firstErr ? `: ${firstErr}` : ''}`
+      : null;
+    state.lastUpdated = Date.now();
+    // R1/C5: a successful poll proves the backend is reachable even if the
+    // WS is degraded — recover the liveness line from 'reconnecting' so the
+    // UI doesn't permanently report degradation when polling data is fresh.
+    if (state.wsState === 'reconnecting' || state.wsState === 'closed') {
+      state.wsState = 'connected';
     }
     state.loading = false;
     updateUI();
   }
 
   // Wire up events socket — store the disposer for cleanup.
+  // The state callback drives the rail's liveness line (G5).
   offEvents = api.onEvents(() => {
     refresh();
+  }, (ws) => {
+    state.wsState = ws;
+    updateUI();
   });
+
+  // R1: bounded polling fallback. The WS is an accelerator; when it drops,
+  // poll on a cadence so the surface stays live instead of freezing until a
+  // manual action. Stops automatically once the socket is connected again.
+  const POLL_INTERVAL_MS = 5000;
+  const pollTimer = window.setInterval(() => {
+    if (state.wsState === 'connected') return;
+    void refresh();
+  }, POLL_INTERVAL_MS);
 
   // ---------------------------------------------------------------------------
   // updateUI — respects selectedPeer so focus detail survives tab changes
   // ---------------------------------------------------------------------------
 
   function updateUI(): void {
+    // R7: compute the offline set once per render (O(N)), not per peer.
+    const offlinePeers = offlineSet(state);
     // Update peer rail
     const railList = peerRail.querySelector('.wt-peer-list');
     if (railList) {
       railList.innerHTML = '';
       for (const peer of state.peers) {
-        railList.appendChild(buildPeerItem(peer));
+        railList.appendChild(buildPeerItem(peer, offlinePeers));
       }
       const count = peerRail.querySelector('.wt-rail-count');
       if (count) count.textContent = String(state.peers.length);
+    }
+
+    // Eyebrow active count (G2) + liveness line (G5)
+    const eyebrow = peerRail.querySelector('#wt-eyebrow');
+    if (eyebrow) {
+      eyebrow.innerHTML = renderEyebrow(state);
+    }
+    const live = peerRail.querySelector('#wt-live');
+    if (live) {
+      live.textContent = liveLabel(state.wsState, state.lastUpdated, state.summary?.last_updated || '');
+      live.classList.toggle('off', state.wsState === 'reconnecting' || state.wsState === 'closed');
     }
 
     // Update workspace — if a peer is selected, show detail; otherwise show tab content
@@ -313,14 +387,22 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
   // the hide scheduled by peer mouseleave.
   // ---------------------------------------------------------------------------
 
-  function buildPeerItem(peer: PeerView): HTMLElement {
+  function buildPeerItem(peer: PeerView, offlinePeers: Set<string>): HTMLElement {
     const li = document.createElement('li');
+    const offline = offlinePeers.has(peer.peer_id);
+    const isMe = peer.peer_id === state.youPeerId;
+    const label = statusLabel(peer.status, offline);
+    const dot = dotClass(peer.status, offline);
+    const activity = (peer.current_activity || '').trim();
+
     li.className = 'wt-peer-item';
     li.setAttribute('data-peer', peer.name || peer.agent_id);
-    li.setAttribute('data-meta', `${peer.surface} · ${peer.status} · ${peer.profile || 'default'}`);
+    li.setAttribute('data-meta', `${peer.surface} · ${label} · ${peer.profile || 'default'}`);
     li.setAttribute('tabindex', '0');
     li.setAttribute('role', 'option');
     li.setAttribute('aria-selected', 'false');
+    if (isMe) li.classList.add('me');
+    if (offline) li.classList.add('off');
 
     const avatar = document.createElement('div');
     avatar.className = 'wt-peer-avatar';
@@ -328,11 +410,13 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
 
     const info = document.createElement('div');
     info.className = 'wt-peer-info';
-    info.innerHTML = `<b>${escapeHtml(peer.name || peer.agent_id.slice(0, 8))}</b><small>${escapeHtml(peer.surface)} · ${escapeHtml(peer.status)}</small>`;
+    info.innerHTML = `<b>${escapeHtml(peer.name || peer.agent_id.slice(0, 8))}` +
+      (isMe ? '<span class="wt-you">you</span>' : '') + `</b>` +
+      `<small>${escapeHtml(peer.surface)} · ${escapeHtml(label)}</small>` +
+      (activity ? `<span class="wt-act${dot === 'g' ? ' g' : ''}">${escapeHtml(activity)}</span>` : '');
 
     const presence = document.createElement('i');
-    presence.className = 'wt-presence';
-    if (peer.status === 'active') presence.classList.add('active');
+    presence.className = `wt-presence dot ${dot}`;
 
     li.appendChild(avatar);
     li.appendChild(info);
@@ -353,7 +437,8 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
       const nameEl = document.getElementById('wt-inspect-name');
       const bodyEl = document.getElementById('wt-inspect-body');
       if (nameEl) nameEl.textContent = peer.name || peer.agent_id;
-      if (bodyEl) bodyEl.textContent = `${peer.surface} session. ${peer.status}. Profile: ${peer.profile || 'default'}. CWD: ${peer.cwd}`;
+      if (bodyEl) bodyEl.textContent = `${peer.surface} session. ${label}. Profile: ${peer.profile || 'default'}. CWD: ${peer.cwd}` +
+        (activity ? ` Activity: ${activity}` : '') + (isMe ? ' (you)' : '');
 
       const rect = li.getBoundingClientRect();
       insp.style.left = `${rect.right + 12}px`;
@@ -411,6 +496,11 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
     const body = workspace.querySelector('.wt-workspace-body');
     if (!body) return;
 
+    const offline = isPeerOffline(state, peer.peer_id);
+    const isMe = peer.peer_id === state.youPeerId;
+    const label = statusLabel(peer.status, offline);
+    const activity = (peer.current_activity || '').trim();
+
     // Find or create peer detail surface
     let detail = document.getElementById('wt-peer-detail') as HTMLElement | null;
     if (!detail) {
@@ -430,7 +520,8 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
       <div class="wt-peer-detail-body">
         <div class="wt-peer-detail-field"><label>Agent ID</label><code>${escapeHtml(peer.agent_id)}</code></div>
         <div class="wt-peer-detail-field"><label>Surface</label><span>${escapeHtml(peer.surface)}</span></div>
-        <div class="wt-peer-detail-field"><label>Status</label><span class="wt-badge ${badgeClass(peer.status)}">${escapeHtml(peer.status)}</span></div>
+        <div class="wt-peer-detail-field"><label>Status</label><span class="wt-badge ${badgeClass(label)}">${escapeHtml(label)}</span>${isMe ? ' <span class="wt-you">you</span>' : ''}</div>
+        <div class="wt-peer-detail-field"><label>Activity</label><span class="wt-act">${escapeHtml(activity || '—')}</span></div>
         <div class="wt-peer-detail-field"><label>Profile</label><span>${escapeHtml(peer.profile || 'default')}</span></div>
         <div class="wt-peer-detail-field"><label>CWD</label><code>${escapeHtml(peer.cwd)}</code></div>
         <div class="wt-peer-detail-field"><label>Git Branch</label><span>${escapeHtml(peer.git_branch || '—')}</span></div>
@@ -469,6 +560,7 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
     // Clear timers
     if (inspectorHideTimer) { clearTimeout(inspectorHideTimer); inspectorHideTimer = null; }
     if (copyFeedbackTimer) { clearTimeout(copyFeedbackTimer); copyFeedbackTimer = null; }
+    if (pollTimer) { clearInterval(pollTimer); }
 
     // Close WebSocket / event subscription
     if (offEvents) {
@@ -528,11 +620,14 @@ function buildPeersTab(state: AppState): HTMLElement {
   }
   const table = document.createElement('table');
   table.className = 'wt-table';
-  table.innerHTML = `<thead><tr><th>Name</th><th>Agent ID</th><th>Surface</th><th>Status</th><th>Profile</th><th>Branch</th></tr></thead>`;
+  table.innerHTML = `<thead><tr><th>Name</th><th>Agent ID</th><th>Surface</th><th>Status</th><th>Profile</th><th>Branch</th><th>Activity</th></tr></thead>`;
   const tbody = document.createElement('tbody');
   for (const p of state.peers) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td><strong>${escapeHtml(p.name || '—')}</strong></td><td><code>${escapeHtml(p.agent_id.slice(0, 12))}</code></td><td>${escapeHtml(p.surface)}</td><td><span class="wt-badge ${badgeClass(p.status)}">${escapeHtml(p.status)}</span></td><td>${escapeHtml(p.profile || 'default')}</td><td>${escapeHtml(p.git_branch || '—')}</td>`;
+    const offline = isPeerOffline(state, p.peer_id);
+    const pLabel = statusLabel(p.status, offline);
+    const pActivity = (p.current_activity || '').trim();
+    tr.innerHTML = `<td><strong>${escapeHtml(p.name || '—')}</strong>${p.peer_id === state.youPeerId ? ' <span class="wt-you">you</span>' : ''}</td><td><code>${escapeHtml(p.agent_id.slice(0, 12))}</code></td><td>${escapeHtml(p.surface)}</td><td><span class="wt-badge ${badgeClass(pLabel)}">${escapeHtml(pLabel)}</span></td><td>${escapeHtml(p.profile || 'default')}</td><td>${escapeHtml(p.git_branch || '—')}</td><td>${escapeHtml(pActivity || '—')}</td>`;
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);

@@ -140,6 +140,7 @@ class PeerRecord:
     started_at: str = ""           # RFC3339 UTC
     last_seen: str = ""            # RFC3339 UTC
     status: str = Presence.IDLE.value
+    current_activity: str = ""     # free-text task note (presence remediation G4)
     socket_path: str = ""
     socket_uid: int = 0
     socket_inode: int = 0
@@ -161,6 +162,8 @@ class PeerRecord:
             raise ValidationError("capabilities must be a dict")
         if self.status not in {p.value for p in Presence}:
             raise ValidationError(f"invalid presence status {self.status!r}")
+        if not isinstance(self.current_activity, str):
+            raise ValidationError("current_activity must be a string")
         if self.protocol != PROTOCOL_ID and self.protocol != PROTOCOL_ID_V2:
             raise ValidationError(f"unsupported protocol {self.protocol!r}")
 

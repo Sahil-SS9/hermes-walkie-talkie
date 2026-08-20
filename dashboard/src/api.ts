@@ -16,8 +16,35 @@ export interface PeerView {
   profile: string;
   surface: string;
   status: string;
+  current_activity: string;
   cwd: string;
   git_branch: string;
+}
+
+export interface SummaryView {
+  total: number;
+  active_count: number;
+  idle_count?: number;
+  offline_count: number;
+  // R9: canonical wire key. `you_peer_id` is the backend contract from
+  // GET /peers/summary — do NOT rename to camelCase here; internal state
+  // mirrors it as AppState.youPeerId (snake wire / camel internal split).
+  you_peer_id: string | null;
+  last_updated: string;
+  peers: Array<{
+    peer_id: string;
+    agent_id: string;
+    name: string;
+    profile: string;
+    surface: string;
+    status: string;
+    offline: boolean;
+    status_label: string;
+    current_activity: string;
+    cwd: string;
+    git_branch: string;
+    last_seen: string;
+  }>;
 }
 
 export interface GroupView {
@@ -66,6 +93,8 @@ export interface EventsFrame {
   events: Array<{ kind: string; [key: string]: unknown }>;
 }
 
+export type WsState = 'connecting' | 'connected' | 'reconnecting' | 'closed';
+
 // ---------------------------------------------------------------------------
 // SDK surface (the real contract from window.__HERMES_PLUGIN_SDK__)
 // ---------------------------------------------------------------------------
@@ -98,6 +127,7 @@ export function createApi(sdk: HermesPluginSDK) {
     health: (): Promise<HealthView> => sdk.fetchJSON(`${BASE}/health`),
     metrics: (): Promise<Record<string, unknown>> => sdk.fetchJSON(`${BASE}/metrics`),
     peers: (): Promise<{ peers: PeerView[] }> => sdk.fetchJSON(`${BASE}/peers`),
+    summary: (): Promise<SummaryView> => sdk.fetchJSON(`${BASE}/peers/summary`),
     groups: (): Promise<{ groups: GroupView[] }> => sdk.fetchJSON(`${BASE}/groups`),
     createGroup: (name: string): Promise<GroupView> =>
       sdk.fetchJSON(`${BASE}/groups`, { method: 'POST', body: JSON.stringify({ name }), headers: { 'Content-Type': 'application/json' } }),
@@ -119,20 +149,32 @@ export function createApi(sdk: HermesPluginSDK) {
       }),
 
     /** WebSocket events — uses the host's buildWsUrl for auth. */
-    onEvents: (fn: (frame: EventsFrame) => void): (() => void) => {
+    onEvents: (fn: (frame: EventsFrame) => void, onState?: (state: WsState) => void): (() => void) => {
       let ws: WebSocket | null = null;
       let cancelled = false;
+      const setState = (s: WsState) => {
+        if (cancelled) return;
+        if (onState) onState(s);
+      };
       sdk.buildWsUrl(`${BASE}/events`).then((url) => {
         if (cancelled) return;
         ws = new WebSocket(url);
+        ws.onopen = () => setState('connected');
         ws.onmessage = (e) => {
+          if (cancelled) return;
           try { fn(JSON.parse(e.data as string)); } catch { /* ignore malformed frames */ }
         };
-        ws.onerror = () => { /* socket errors are non-fatal; polling is the fallback */ };
-      }).catch(() => { /* buildWsUrl failed; polling is the fallback */ });
+        ws.onerror = () => { setState('reconnecting'); /* socket errors are non-fatal; polling is the fallback */ };
+        ws.onclose = () => { setState('reconnecting'); /* degraded but alive via polling */ };
+      }).catch(() => { setState('reconnecting'); /* buildWsUrl failed; polling is the fallback */ });
       return () => {
         cancelled = true;
-        try { ws?.close(); } catch { /* ignore */ }
+        // C7: null the handlers BEFORE close so no queued event re-enters the
+        // unmounted app via the stale closures.
+        if (ws) {
+          ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+          try { ws.close(); } catch { /* ignore */ }
+        }
       };
     },
   };

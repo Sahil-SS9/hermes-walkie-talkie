@@ -70,3 +70,39 @@ class TestSessionLifecycleEdges:
         mgr._peer_handles.pop(old_id, None)
         mgr.on_session_reset("new-sess", platform="cli", old_session_id="old-sess")
         assert "new-sess" in mgr._session_to_peer
+
+
+class TestHeartbeatPump:
+    """X1: the bounded background heartbeat pump keeps last_seen fresh."""
+
+    def test_ensure_presence_creates_manager(self, mgr):
+        mgr.on_session_start("hb-sess", platform="cli")
+        peer_id = mgr._session_to_peer["hb-sess"]
+        # _presence is keyed by session_id -> PresenceManager (X1).
+        assert "hb-sess" in mgr._presence
+        assert mgr._presence["hb-sess"]._peer_id == peer_id
+
+    def test_heartbeat_thread_runs_and_is_daemon(self, mgr):
+        assert mgr._heartbeat_thread is not None
+        assert mgr._heartbeat_thread.daemon is True
+        assert mgr._heartbeat_thread.name == "hermes-peer-heartbeat"
+
+    def test_heartbeat_touches_last_seen(self, mgr):
+        mgr.on_session_start("hb-sess", platform="cli")
+        peer_id = mgr._session_to_peer["hb-sess"]
+        before = mgr._registry.get(peer_id).last_seen
+        # Force a write (bypass the interval throttle) and confirm the
+        # registry record's last_seen advances.
+        assert mgr._presence["hb-sess"].heartbeat(force=True) is True
+        after = mgr._registry.get(peer_id).last_seen
+        assert after is not None and after >= before
+
+    def test_drop_presence_on_finalize(self, mgr):
+        mgr.on_session_start("hb-sess", platform="cli")
+        mgr.on_session_finalize("hb-sess", reason="test")
+        assert "hb-sess" not in mgr._presence
+
+    def test_shutdown_stops_heartbeat_thread(self, mgr):
+        mgr.on_session_start("hb-sess", platform="cli")
+        mgr.shutdown()
+        assert mgr._heartbeat_thread is None

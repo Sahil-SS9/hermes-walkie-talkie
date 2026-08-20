@@ -38,6 +38,7 @@ describe('Build output integrity', () => {
     // The bundled output should contain the API route paths
     assert.ok(content.includes('/health'), 'must contain /health route');
     assert.ok(content.includes('/peers'), 'must contain /peers route');
+    assert.ok(content.includes('/peers/summary'), 'must contain /peers/summary route');
     assert.ok(content.includes('/groups'), 'must contain /groups route');
     assert.ok(content.includes('/inbox'), 'must contain /inbox route');
     assert.ok(content.includes('/requests'), 'must contain /requests route');
@@ -90,6 +91,14 @@ describe('Build output integrity', () => {
       '.wt-control-room',
       '.wt-peer-item',
       '.wt-theme-pop',
+      // Presence remediation classes (G1/G3/G5/G6)
+      '.wt-live',
+      '.wt-you',
+      '.wt-act',
+      '.wt-presence.dot.g',
+      '.wt-presence.dot.a',
+      '.wt-presence.dot.q',
+      '.wt-presence.dot.r',
     ];
     for (const cls of required) {
       assert.ok(content.includes(cls), `CSS must contain ${cls}`);

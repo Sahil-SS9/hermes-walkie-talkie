@@ -1,7 +1,7 @@
 {
   "inputs": {
     "src/api.ts": {
-      "bytes": 5440,
+      "bytes": 6921,
       "imports": [],
       "format": "esm"
     },
@@ -27,7 +27,7 @@
       "format": "esm"
     },
     "src/components/peer-rail.ts": {
-      "bytes": 2038,
+      "bytes": 5069,
       "imports": [],
       "format": "esm"
     },
@@ -47,7 +47,7 @@
       "format": "esm"
     },
     "src/app.ts": {
-      "bytes": 25867,
+      "bytes": 30541,
       "imports": [
         {
           "path": "src/api.ts",
@@ -93,7 +93,7 @@
       "format": "esm"
     },
     "src/style.css": {
-      "bytes": 14532,
+      "bytes": 16324,
       "imports": [
         {
           "path": "data:image/svg+xml,%3Csvg viewBox='0 0 240 240' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.92' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E",
@@ -120,7 +120,7 @@
     }
   },
   "bytes": {
-    "js": 24414,
-    "css": 11600
+    "js": 27639,
+    "css": 12630
   }
 }

@@ -42,10 +42,36 @@ class _Mgr:
             profile = ""
             surface = "cli"
             status = "idle"
+            current_activity = "scanning arxiv"
             cwd = "/tmp"
             git_branch = ""
 
         return [R()]
+
+    def summary(self):
+        return {
+            "total": 1,
+            "active_count": 0,
+            "offline_count": 0,
+            "you_peer_id": "p1",
+            "last_updated": "2026-08-20T12:00:00+00:00",
+            "peers": [
+                {
+                    "peer_id": "p1",
+                    "agent_id": "a1",
+                    "name": "alpha",
+                    "profile": "",
+                    "surface": "cli",
+                    "status": "idle",
+                    "offline": False,
+                    "status_label": "idle",
+                    "current_activity": "scanning arxiv",
+                    "cwd": "/tmp",
+                    "git_branch": "",
+                    "last_seen": "2026-08-20T12:00:00+00:00",
+                }
+            ],
+        }
 
     def group_list(self):
         return self.groups
@@ -120,6 +146,38 @@ class _Mgr:
     def read_inbox(self, session_id=None):
         return []
 
+    def resolve_peer(self, peer_id):
+        class R:
+            session_id = "s1"
+
+        # p2 = a REMOTE-shaped record: its owning session (s2) is a sibling
+        # process's session, never resolvable as a local session. G8 must
+        # still send to it (sender = local single session).
+        if peer_id == "p2":
+            return type("R2", (), {"session_id": "s2"})()
+        if peer_id != "p1":
+            return None
+        return R()
+
+    def send_message(self, peer_id, content, reply_to=None, session_id=None):
+        if peer_id not in ("p1", "p2"):
+            raise ValueError(f"no active peer with peer_id {peer_id!r}")
+        return {
+            "message_id": "m1",
+            "state": "accepted",
+            "recipient_peer_id": peer_id,
+            "detail": "",
+            "delivered_at": None,
+        }
+
+    def set_policy(self, policy_name, session_id=None):
+        self.resolve_session(session_id)
+        self.last_policy = (session_id, policy_name)
+
+    def policy_for(self, session_id=None):
+        self.resolve_session(session_id)
+        return "accept"
+
     def request_status(self, request_id, session_id=None):
         if request_id == "missing":
             raise ValueError("unknown request")
@@ -164,6 +222,22 @@ def test_metrics(client):
 def test_peers(client):
     r = client.get("/api/plugins/hermes-peer/peers")
     assert r.json()["peers"][0]["agent_id"] == "a1"
+    assert r.json()["peers"][0]["current_activity"] == "scanning arxiv"
+
+
+def test_peers_summary(client):
+    """G2: /peers/summary exposes the aggregate counts + you marker."""
+    r = client.get("/api/plugins/hermes-peer/peers/summary")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 1
+    assert body["active_count"] == 0
+    assert body["offline_count"] == 0
+    assert body["you_peer_id"] == "p1"
+    assert body["last_updated"]
+    assert body["peers"][0]["offline"] is False
+    assert body["peers"][0]["status_label"] == "idle"
+    assert body["peers"][0]["current_activity"] == "scanning arxiv"
 
 
 def test_groups_empty_and_create(client):
@@ -197,6 +271,49 @@ def test_request_detail_and_respond(client):
     assert r.json()["state"] == "completed"
     r = client.post("/api/plugins/hermes-peer/requests/r1/respond", json={"action": "bogus"})
     assert r.status_code == 400
+
+
+def test_peer_send_message(client):
+    """G8: POST /peers/{peer_id}/messages delegates to mgr.send_message with
+    the peer's bound session (exact-session seam)."""
+    r = client.post("/api/plugins/hermes-peer/peers/p1/messages", json={"content": "hello"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["state"] == "accepted"
+    assert body["message_id"] == "m1"
+    assert body["recipient_peer_id"] == "p1"
+    r = client.post("/api/plugins/hermes-peer/peers/p1/messages", json={"content": "   "})
+    assert r.status_code == 400
+    r = client.post("/api/plugins/hermes-peer/peers/p1/messages", json={})
+    assert r.status_code == 400
+    r = client.post("/api/plugins/hermes-peer/peers/nope/messages", json={"content": "hi"})
+    assert r.status_code == 404
+    # G8 remote-peer fix: a record owned by a SIBLING session (s2) must still
+    # be sendable — the old code 404'd because it tried to resolve s2 as a
+    # local session. Sender defaults to the local single session.
+    r = client.post("/api/plugins/hermes-peer/peers/p2/messages", json={"content": "hi remote"})
+    assert r.status_code == 200
+    assert r.json()["recipient_peer_id"] == "p2"
+
+
+def test_peer_policy(client):
+    """G8: POST /peers/{peer_id}/policy bridges peer_id -> session and sets
+    the session-scoped policy; unknown peer -> 404, bad policy -> 400."""
+    r = client.post("/api/plugins/hermes-peer/peers/p1/policy", json={"policy": "hold"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["peer_id"] == "p1"
+    assert body["policy"] == "hold"
+    r = client.post("/api/plugins/hermes-peer/peers/p1/policy", json={"policy": "bogus"})
+    assert r.status_code == 400
+    r = client.post("/api/plugins/hermes-peer/peers/nope/policy", json={"policy": "hold"})
+    assert r.status_code == 404
+    # G8 remote-peer fix: policy applies to the LOCAL session even when the
+    # peer is a remote-shaped record (owning session s2 not resolvable locally).
+    r = client.post("/api/plugins/hermes-peer/peers/p2/policy", json={"policy": "hold"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
 
 
 def test_events_websocket(client, monkeypatch):

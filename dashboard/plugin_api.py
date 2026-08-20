@@ -19,6 +19,8 @@ import logging
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
+from agent_peer.models import Policy
+
 log = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -95,11 +97,21 @@ def peers() -> dict:
                 "profile": record.profile,
                 "surface": record.surface,
                 "status": record.status,
+                "current_activity": record.current_activity,
                 "cwd": record.cwd,
                 "git_branch": record.git_branch,
             }
         )
     return {"peers": rows}
+
+
+@router.get("/peers/summary")
+def peers_summary() -> dict:
+    """Aggregate presence summary (G2/G5/G6): active/offline counts, the
+    local ``you_peer_id`` and the newest heartbeat timestamp. Offline is
+    derived at this layer; no status mutation ever happens here."""
+    mgr = _manager()
+    return mgr.summary()
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +211,62 @@ def respond(request_id: str, body: dict, session_id: str | None = None) -> dict:
         return mgr.request_respond(request_id, action, detail=body.get("detail") or "", session_id=session_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Peer actions (G8): send + policy — thin wrappers over the same manager
+# methods the tools/commands call. peer_id is the TARGET (recipient for send,
+# existence check for policy); the sender/policy subject is always THIS
+# process's own local session (single-session default), matching the
+# peer-send / peer-policy commands. The target's owning session belongs to a
+# sibling process and is never resolved locally.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/peers/{peer_id}/messages")
+def peer_send(peer_id: str, body: dict, session_id: str | None = None) -> dict:
+    """Send one message to a peer (G8 'Send'; peer-send equivalent).
+
+    ``peer_id`` is the RECIPIENT; the sender is this process's own local
+    session (single-session default, same as the peer-send command). The
+    target's owning session is NOT resolved locally — it belongs to the
+    sibling process and must not be used as the sender seam.
+    """
+    mgr = _manager()
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+    rec = mgr.resolve_peer(peer_id)
+    if rec is None:
+        # R6: sanitised detail — never leak internal exception text to clients.
+        raise HTTPException(status_code=404, detail="unknown peer")
+    try:
+        return mgr.send_message(peer_id, content, session_id=None)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="peer unreachable") from None
+
+
+@router.post("/peers/{peer_id}/policy")
+def peer_policy(peer_id: str, body: dict, session_id: str | None = None) -> dict:
+    """Set the inbound policy for a peer's session (G8 'Policy'; peer-policy
+    equivalent). Policy is session-scoped (REM-210) and applies to THIS
+    process's own session — the peer_id validates the target exists but the
+    policy is set on the local single session (same as the peer-policy
+    command)."""
+    mgr = _manager()
+    policy = (body.get("policy") or "").strip().lower()
+    valid = {p.value for p in Policy}
+    if policy not in valid:
+        raise HTTPException(status_code=400, detail=f"invalid policy {policy!r}; expected one of {sorted(valid)}")
+    rec = mgr.resolve_peer(peer_id)
+    if rec is None:
+        # R6: sanitised detail — never leak internal exception text to clients.
+        raise HTTPException(status_code=404, detail="unknown peer")
+    try:
+        mgr.set_policy(policy, session_id=None)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="peer unreachable") from None
+    return {"ok": True, "peer_id": peer_id, "policy": policy}
 
 
 # ---------------------------------------------------------------------------

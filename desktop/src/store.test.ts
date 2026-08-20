@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { appendActivity, createRefresher, emptyState, MAX_ACTIVITY } from './store'
+import { createRefresher, emptyState, statusPillLabel, timeAgoFromIso, type PeerUiState } from './store'
 
 describe('emptyState', () => {
   it('starts loading with no data', () => {
@@ -9,20 +9,30 @@ describe('emptyState', () => {
     expect(s.error).toBeNull()
     expect(s.peers).toEqual([])
     expect(s.requests).toEqual([])
+    expect(s.summary).toBeNull()
   })
 })
 
 describe('createRefresher', () => {
-  it('publishes peers and requests after a successful fetch', async () => {
+  it('publishes peers, requests and summary after a successful fetch', async () => {
     const api = {
-      peers: async () => ({ peers: [{ peer_id: 'p1', agent_id: 'a1', name: 'alpha', profile: '', surface: 'cli', status: 'idle', cwd: '/tmp', git_branch: '' }] }),
+      peers: async () => ({ peers: [{ peer_id: 'p1', agent_id: 'a1', name: 'alpha', profile: '', surface: 'cli', status: 'idle', current_activity: '', cwd: '/tmp', git_branch: '' }] }),
       requests: async () => ({ requests: [] }),
+      summary: async () => ({
+        total: 1,
+        active_count: 0,
+        offline_count: 0,
+        you_peer_id: 'p1',
+        last_updated: new Date().toISOString(),
+        peers: [{ peer_id: 'p1', agent_id: 'a1', name: 'alpha', profile: '', surface: 'cli', status: 'idle', offline: false, status_label: 'idle', current_activity: '', cwd: '/tmp', git_branch: '', last_seen: new Date().toISOString() }],
+      }),
     }
     let published: unknown = null
     const refresh = createRefresher(api as never, (s) => (published = s))
     await refresh()
     expect((published as { loading: boolean }).loading).toBe(false)
     expect((published as { peers: unknown[] }).peers).toHaveLength(1)
+    expect((published as { summary: { total: number } }).summary?.total).toBe(1)
     expect((published as { lastUpdated: number | null }).lastUpdated).not.toBeNull()
   })
 
@@ -32,6 +42,7 @@ describe('createRefresher', () => {
         throw new Error('boom')
       },
       requests: async () => ({ requests: [] }),
+      summary: async () => ({ total: 0, active_count: 0, offline_count: 0, you_peer_id: null, last_updated: '', peers: [] }),
     }
     let published: unknown = null
     const refresh = createRefresher(api as never, (s) => (published = s))
@@ -44,6 +55,7 @@ describe('createRefresher', () => {
     const api = {
       peers: async () => ({ peers: [] }),
       requests: async () => ({ requests: [] }),
+      summary: async () => ({ total: 0, active_count: 0, offline_count: 0, you_peer_id: null, last_updated: '', peers: [] }),
     }
     const seen: unknown[] = []
     const refresh = createRefresher(api as never, (s) => seen.push(s))
@@ -56,13 +68,67 @@ describe('createRefresher', () => {
   })
 })
 
-describe('appendActivity', () => {
-  it('appends frames and bounds the ring', () => {
-    let items: Array<{ kind: string; id: string; at: number }> = []
-    for (let i = 0; i < 60; i++) {
-      items = appendActivity(items, { events: [{ kind: 'peer_seen' }] })
+describe('statusPillLabel (G7)', () => {
+  it('renders the mockup pill copy with you + offline + liveness', () => {
+    const state: PeerUiState = {
+      loading: false,
+      error: null,
+      peers: [],
+      requests: [],
+      summary: {
+        total: 3,
+        active_count: 2,
+        offline_count: 1,
+        you_peer_id: 'p1',
+        last_updated: new Date(Date.now() - 2000).toISOString(),
+        peers: [
+          { peer_id: 'p1', agent_id: 'a1', name: 'KENSEI', profile: '', surface: 'cli', status: 'working', offline: false, status_label: 'working', current_activity: '', cwd: '', git_branch: '', last_seen: '' },
+          { peer_id: 'p2', agent_id: 'a2', name: 'Remii', profile: '', surface: 'cli', status: 'working', offline: false, status_label: 'working', current_activity: '', cwd: '', git_branch: '', last_seen: '' },
+          { peer_id: 'p3', agent_id: 'a3', name: 'Octacon', profile: '', surface: 'cli', status: 'idle', offline: true, status_label: 'offline', current_activity: '', cwd: '', git_branch: '', last_seen: '' },
+        ],
+      },
+      lastUpdated: Date.now(),
     }
-    expect(items).toHaveLength(MAX_ACTIVITY)
-    expect(items[items.length - 1].kind).toBe('peer_seen')
+    const label = statusPillLabel(state)
+    // total 3: 2 active (Live), 1 offline → `● 2 Live · × 1 Offline`
+    expect(label).toContain('● 2 Live')
+    expect(label).toContain('you: KENSEI')
+    expect(label).toContain('× 1 Offline')
+    expect(label).toContain('live 2s')
+  })
+
+  it('handles a missing summary gracefully (empty pill)', () => {
+    expect(statusPillLabel(emptyState())).toBe('')
+  })
+
+  it('hides the pill when only one session is known (total < 2)', () => {
+    const state: PeerUiState = {
+      loading: false,
+      error: null,
+      peers: [],
+      requests: [],
+      summary: {
+        total: 1,
+        active_count: 1,
+        offline_count: 0,
+        you_peer_id: 'p1',
+        last_updated: new Date().toISOString(),
+        peers: [
+          { peer_id: 'p1', agent_id: 'a1', name: 'KENSEI', profile: '', surface: 'cli', status: 'working', offline: false, status_label: 'working', current_activity: '', cwd: '', git_branch: '', last_seen: '' },
+        ],
+      },
+      lastUpdated: Date.now(),
+    }
+    // Single session = you only → no ambient signal.
+    expect(statusPillLabel(state)).toBe('')
+  })
+})
+
+describe('timeAgoFromIso', () => {
+  it('formats seconds and minutes', () => {
+    const now = Date.now()
+    expect(timeAgoFromIso(new Date(now - 2000).toISOString(), now)).toBe('2s ago')
+    expect(timeAgoFromIso(new Date(now - 65_000).toISOString(), now)).toBe('1m ago')
+    expect(timeAgoFromIso('', now)).toBe('—')
   })
 })

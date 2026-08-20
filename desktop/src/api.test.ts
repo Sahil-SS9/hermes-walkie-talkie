@@ -17,18 +17,26 @@ describe('createPeerApi', () => {
     const api = createPeerApi(ctx)
     await api.health()
     await api.peers()
+    await api.summary()
     await api.groups()
     await api.createGroup('team')
     await api.broadcastOutcomes('b1')
+    await api.send('p1', 'hello')
+    await api.policy('p1', 'hold')
 
     expect(calls.map((c) => c.path)).toEqual([
       '/health',
       '/peers',
+      '/peers/summary',
       '/groups',
       '/groups',
       '/broadcasts/b1',
+      '/peers/p1/messages',
+      '/peers/p1/policy',
     ])
-    expect(calls[3].opts).toMatchObject({ method: 'POST', body: { name: 'team' } })
+    expect(calls[4].opts).toMatchObject({ method: 'POST', body: { name: 'team' } })
+    expect(calls[6].opts).toMatchObject({ method: 'POST', body: { content: 'hello' } })
+    expect(calls[7].opts).toMatchObject({ method: 'POST', body: { policy: 'hold' } })
   })
 
   it('returns a socket disposer for events', () => {

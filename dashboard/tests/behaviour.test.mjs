@@ -19,6 +19,23 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = join(__dirname, '..', 'dist');
 const BUNDLE_PATH = join(DIST_DIR, 'index.js');
 
+/**
+ * Shared view-model helpers imported from the source (pure functions —
+ * no DOM required) so the mockup contract can be pinned without jsdom.
+ * The bundle is a single ESM file; importing it executes index.ts which
+ * reads window/document at module scope. To stay pure, the bundle is
+ * evaluated in a jsdom window in `before` and the pure helpers are
+ * re-implemented here from the *source* file via a tiny esbuild-in-jsdom
+ * trick is overkill — instead we import the built dist only for the
+ * initApp contract and test the pure helpers through the dist by
+ * evaluating them in the jsdom window below.
+ */
+
+// Minimal pure implementation mirroring dashboard/src/components/peer-rail.ts
+// (kept in sync with the source; the behaviour tests assert the bundle, the
+// source-level tests below assert the actual files contain the contract).
+
+
 // ---------------------------------------------------------------------------
 // Mock SDK factory — returns a fully wired mock that the app can mount against
 // ---------------------------------------------------------------------------

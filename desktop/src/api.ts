@@ -15,8 +15,32 @@ export interface PeerView {
   profile: string
   surface: string
   status: string
+  current_activity: string
   cwd: string
   git_branch: string
+}
+
+export interface SummaryView {
+  total: number
+  active_count: number
+  idle_count?: number
+  offline_count: number
+  you_peer_id: string | null
+  last_updated: string
+  peers: Array<{
+    peer_id: string
+    agent_id: string
+    name: string
+    profile: string
+    surface: string
+    status: string
+    offline: boolean
+    status_label: string
+    current_activity: string
+    cwd: string
+    git_branch: string
+    last_seen: string
+  }>
 }
 
 export interface GroupView {
@@ -74,6 +98,7 @@ export interface PeerApi {
   health(): Promise<HealthView>
   metrics(): Promise<Record<string, unknown>>
   peers(): Promise<{ peers: PeerView[] }>
+  summary(): Promise<SummaryView>
   groups(): Promise<{ groups: GroupView[] }>
   createGroup(name: string): Promise<GroupView>
   groupMembers(groupId: string): Promise<{ group_id: string; members: MemberView[] }>
@@ -83,6 +108,10 @@ export interface PeerApi {
   requests(): Promise<{ requests: RequestView[] }>
   requestDetail(requestId: string): Promise<RequestView>
   respond(requestId: string, action: string, detail?: string): Promise<RequestView>
+  /** Send one message to a peer (peer-send command equivalent). */
+  send(peerId: string, content: string): Promise<{ state: string; message_id: string }>
+  /** Set the inbound policy for a peer (peer-policy command equivalent). */
+  policy(peerId: string, policy: string): Promise<{ ok: boolean }>
   onEvents(fn: (frame: EventsFrame) => void): () => void
 }
 
@@ -91,6 +120,7 @@ export function createPeerApi(ctx: PluginContext): PeerApi {
     health: () => ctx.rest<HealthView>('/health'),
     metrics: () => ctx.rest<Record<string, unknown>>('/metrics'),
     peers: () => ctx.rest<{ peers: PeerView[] }>('/peers'),
+    summary: () => ctx.rest<SummaryView>('/peers/summary'),
     groups: () => ctx.rest<{ groups: GroupView[] }>('/groups'),
     createGroup: (name) => ctx.rest<GroupView>('/groups', { method: 'POST', body: { name } }),
     groupMembers: (groupId) => ctx.rest<{ group_id: string; members: MemberView[] }>(`/groups/${groupId}/members`),
@@ -105,6 +135,16 @@ export function createPeerApi(ctx: PluginContext): PeerApi {
       ctx.rest<RequestView>(`/requests/${requestId}/respond`, {
         method: 'POST',
         body: { action, detail },
+      }),
+    send: (peerId, content) =>
+      ctx.rest<{ state: string; message_id: string }>(`/peers/${peerId}/messages`, {
+        method: 'POST',
+        body: { content },
+      }),
+    policy: (peerId, policy) =>
+      ctx.rest<{ ok: boolean }>(`/peers/${peerId}/policy`, {
+        method: 'POST',
+        body: { policy },
       }),
     onEvents: (fn) => ctx.socket('/events', (data) => fn(data as EventsFrame)),
   }

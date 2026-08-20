@@ -76,6 +76,7 @@ class Registry:
                 "started_at": record.started_at or _now_iso(),
                 "last_seen": record.last_seen or _now_iso(),
                 "status": record.status,
+                "current_activity": record.current_activity,
                 "socket_path": record.socket_path,
                 "socket_uid": record.socket_uid,
                 "socket_inode": record.socket_inode,
@@ -127,12 +128,18 @@ class Registry:
         expected_socket_inode: int,
         name: str | None = None,
         status: Presence | str | None = None,
+        current_activity: str | None = None,
         touch_last_seen: bool = True,
     ) -> PeerRecord | None:
         """Atomically update mutable metadata behind an exact authority fence.
 
         Identity, session and bound-socket fields are never caller-mutable. A
         stale writer receives ``None`` and cannot overwrite a replacement.
+
+        ``current_activity`` uses a presence sentinel: ``None`` means "leave
+        unchanged" (activity-less transitions never erase a note), while any
+        non-None value — including ``""`` — writes the field. This lets
+        ``mark_idle(activity="")`` / ``on_session_end`` CLEAR the note (C2/H1).
         """
         import dataclasses
 
@@ -152,6 +159,8 @@ class Registry:
                 changes["name"] = name
             if status is not None:
                 changes["status"] = status.value if isinstance(status, Presence) else str(status)
+            if current_activity is not None:
+                changes["current_activity"] = current_activity
             if touch_last_seen:
                 changes["last_seen"] = _now_iso()
             updated = dataclasses.replace(record, **changes)
@@ -163,6 +172,7 @@ class Registry:
         peer_id: str,
         status: Presence | str,
         *,
+        current_activity: str | None = None,
         expected: PeerRecord | None = None,
     ) -> PeerRecord | None:
         with self._lock:
@@ -176,6 +186,7 @@ class Registry:
                 expected_socket_uid=record.socket_uid,
                 expected_socket_inode=record.socket_inode,
                 status=status,
+                current_activity=current_activity,
             )
 
     def heartbeat(self, peer_id: str, *, expected: PeerRecord | None = None) -> PeerRecord | None:

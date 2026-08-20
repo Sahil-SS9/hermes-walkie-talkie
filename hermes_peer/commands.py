@@ -13,6 +13,15 @@ from .plugin import get_manager
 
 logger = logging.getLogger("hermes_peer.commands")
 
+# S9: status glyph map mirroring the dashboard DOT_CLASS_MAP — one source for
+# the ●/○/× per-status markers in `hermes peer ls`.
+STATUS_GLYPH = {
+    "working": "●",
+    "held": "●",
+    "closing": "●",
+    "idle": "○",
+}
+
 
 def register_commands(ctx) -> None:
     """Register slash commands and the `hermes peer` CLI subcommand."""
@@ -81,14 +90,23 @@ def cmd_peers(_raw: str) -> str:
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
-    lines = ["Live peers:"]
-    for record in mgr.list_peers():  # discovery: all live peers, incl. local
-        repo = record.git_branch or record.cwd
+    summary = mgr.summary()
+    you_id = summary["you_peer_id"]
+    lines = [
+        f"Live sessions · {summary['total']}   ● {summary['active_count']} active   "
+        f"× {summary['offline_count']} offline   [live {summary['last_updated'] or '—'}]"
+    ]
+    for row in summary["peers"]:
+        marker = "▸" if row["peer_id"] == you_id else "○"
+        you = " (you)" if row["peer_id"] == you_id else ""
+        status = f"{STATUS_GLYPH.get(row['status_label'], '×')}{row['status_label']}"
+        repo = row["git_branch"] or row["cwd"]
+        activity = row["current_activity"] or "—"
         lines.append(
-            f"  {record.name}  ({record.peer_id[:8]}…)  "
-            f"{record.surface}/{record.status}  {record.profile or '-'}  {repo}"
+            f"  {marker} {row['name']}{you}  {row['surface']}  {status}  "
+            f"{activity}  {row['profile'] or '-'}  {repo}"
         )
-    if len(lines) == 1:
+    if summary["total"] == 0:
         return "No live peers."
     return "\n".join(lines)
 

@@ -5,11 +5,14 @@ Heartbeats are hints — socket handshakes remain authoritative (AP-406).
 
 from __future__ import annotations
 
+import logging
 import time
 
 from .constants import HEARTBEAT_INTERVAL, STALE_THRESHOLD
 from .models import Presence
 from .registry import Registry
+
+logger = logging.getLogger("agent_peer.presence")
 
 
 class PresenceManager:
@@ -35,22 +38,33 @@ class PresenceManager:
         self._last_write = now
         return True
 
-    def set_status(self, status: Presence) -> None:
-        if status is self._status:
+    def set_status(self, status: Presence, *, activity: str | None = None) -> None:
+        if status is self._status and activity is None:
+            return
+        # R4: authority-fenced write. Fetch the CURRENT bound record and pass
+        # it as `expected` so a stale writer (e.g. after a session reset)
+        # cannot clobber a replacement record's status/activity. The fence
+        # returns None when the record changed under us — don't update our
+        # in-memory state in that case.
+        record = self._registry.get(self._peer_id)
+        updated = self._registry.update_presence(
+            self._peer_id, status, current_activity=activity, expected=record
+        )
+        if updated is None:
+            logger.debug("hermes-peer: presence write rejected by authority fence for %s", self._peer_id)
             return
         self._status = status
-        self._registry.update_presence(self._peer_id, status)
         self._last_write = time.monotonic()
 
     @property
     def status(self) -> Presence:
         return self._status
 
-    def mark_working(self) -> None:
-        self.set_status(Presence.WORKING)
+    def mark_working(self, activity: str | None = None) -> None:
+        self.set_status(Presence.WORKING, activity=activity)
 
-    def mark_idle(self) -> None:
-        self.set_status(Presence.IDLE)
+    def mark_idle(self, activity: str | None = None) -> None:
+        self.set_status(Presence.IDLE, activity=activity)
 
     def mark_closing(self) -> None:
         self.set_status(Presence.CLOSING)

@@ -111,7 +111,7 @@ class TestCliDispatch:
             peer_action = "list"
 
         assert run_peer_cli(Args()) == 0
-        assert "Live peers" in capsys.readouterr().out
+        assert "Live sessions" in capsys.readouterr().out
 
         class Args:
             peer_action = "doctor"
