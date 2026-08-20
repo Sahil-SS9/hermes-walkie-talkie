@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_peer.discovery import DiscoveryService
@@ -32,6 +32,7 @@ from agent_peer.models import (
     Policy,
     Presence,
     ReceiptState,
+    Surface,
 )
 from agent_peer.paths import RuntimePaths, select_runtime_dir, select_state_dir
 from agent_peer.policy import PolicyEngine
@@ -58,6 +59,23 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+# Registration grace window: a brand-new session whose socket hasn't been
+# probed yet is 'starting', never 'offline' (issue 2).
+_STARTING_GRACE_SECONDS = 10.0
+
+
+def _is_starting(record: PeerRecord) -> bool:
+    """True when a record is too young to classify as offline (starting)."""
+    seen = record.last_seen
+    if not seen:
+        return False
+    try:
+        parsed = datetime.fromisoformat(seen)
+    except ValueError:
+        return False
+    return (datetime.now(UTC) - parsed).total_seconds() < _STARTING_GRACE_SECONDS
 
 
 def _surface_of(platform: str | None) -> str:
@@ -441,13 +459,20 @@ class PeerSessionManager:
         Single data source for every ambient surface. The pool is scoped to
         RECORDS WHOSE PID IS ALIVE — stale registry files from dead processes
         are excluded so the totals reflect real running sessions, not
-        accumulated history. Among alive-PID records:
-          - live    = probe-live AND status working/held (actively working)
-          - idle    = probe-live AND status idle (running but not working)
-          - offline = PID alive but the socket probe failed (rare)
+        accumulated history.
+
+        Classification (per record):
+          - live     = probe-live (socket answers DISCOVER) AND interactive
+                       surface (cli/tui/desktop — NOT gateway/cron automation)
+          - working  = live AND status working/held (actively mid-turn)
+          - idle     = live AND status idle (open, reachable, not mid-turn)
+          - offline  = PID alive but probe failed, OUTSIDE the registration
+                       grace period (a brand-new session whose socket is not
+                       yet probe-able is 'starting', never 'offline')
+        ``live_count`` is the open-session count the ambient chrome should
+        show; ``active_count`` (working/held) stays for backward compat.
         ``record.status`` is never mutated (the ALIVE probe compares
-        identity['status'] exactly). active_count/offline_count stay
-        backward-compatible; idle_count is added.
+        identity['status'] exactly).
         """
         records = self.list_peers(include_self=include_self)
         # PID-liveness filter: drop stale registry files whose process is dead.
@@ -460,24 +485,29 @@ class PeerSessionManager:
         live_ids = {r.peer_id for r in records}
         peers: list[dict] = []
         total = len(snapshot)
+        live = 0
         active = 0
         idle = 0
         offline = 0
         last_updated = ""
         for record in snapshot:
-            is_offline = record.peer_id not in live_ids
-            is_active = (
-                not is_offline
-                and record.status in (Presence.WORKING.value, Presence.HELD.value)
-            )
-            if is_offline:
+            # Grace period: a record registered < 10s ago whose probe hasn't
+            # landed yet is 'starting' — never 'offline' (issue 2).
+            is_starting = _is_starting(record)
+            is_live = record.peer_id in live_ids and record.surface != Surface.GATEWAY.value
+            if record.peer_id not in live_ids and not is_starting:
                 offline += 1
-            elif is_active:
-                active += 1
-            else:
-                idle += 1
+            elif is_live:
+                live += 1
+                if record.status in (Presence.WORKING.value, Presence.HELD.value):
+                    active += 1
+                else:
+                    idle += 1
+            # Probe-live but gateway surface (cron/automation): counted in
+            # total but NOT in the ambient live/idle/offline buckets.
             if record.last_seen and record.last_seen > last_updated:
                 last_updated = record.last_seen
+            is_offline = record.peer_id not in live_ids and not is_starting
             peers.append(
                 {
                     "peer_id": record.peer_id,
@@ -496,6 +526,7 @@ class PeerSessionManager:
             )
         return {
             "total": total,
+            "live_count": live,
             "active_count": active,
             "idle_count": idle,
             "offline_count": offline,

@@ -39,20 +39,23 @@ export function timeAgoFromIso(iso: string, now: number = Date.now()): string {
   return `${h}h ago`
 }
 
-/** Compact ambient pill copy (G7): `● 2 Live · ○ 1 Idle · you: KENSEI`.
- *  Renders ONLY when >= 2 sessions are known — with a single session the
+/** Compact ambient pill copy (G7): `● 2 Live · ○ 1 Idle · [profile]`.
+ *  Renders ONLY when >= 2 live sessions are open — with a single session the
  *  only peer is you, so the ambient pill hides (same threshold as CLI/TUI).
- *  Live = working/held; Idle = probe-live + idle; Offline = socket-dead. */
+ *  Live = OPEN interactive sessions (probe-live, non-gateway); Idle = live
+ *  but not working; Offline = PID alive but socket-dead. */
 export function statusPillLabel(state: PeerUiState): string {
   const s = state.summary
   if (!s) return ''
-  if ((s.total ?? 0) < 2) return ''
+  const live = (s as { live_count?: number }).live_count ?? 0
+  if (live < 2) return ''
   const youName = (s.peers || []).find((p) => p.peer_id === s.you_peer_id)?.name
   const parts: string[] = []
   const active = s.active_count ?? 0
   const idle = (s as { idle_count?: number }).idle_count ?? 0
   const offline = s.offline_count ?? 0
-  if (active > 0) parts.push(`● ${active} Live`)
+  if (live > 0) parts.push(`● ${live} Live`)
+  if (active > 0 && active < live) parts.push(`${active} working`)
   if (idle > 0) parts.push(`○ ${idle} Idle`)
   if (offline > 0) parts.push(`× ${offline} Offline`)
   if (youName) parts.push(`you: ${youName}`)

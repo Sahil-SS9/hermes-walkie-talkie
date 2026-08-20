@@ -22,6 +22,7 @@ export interface PeerView {
 
 export interface SummaryView {
   total: number
+  live_count?: number
   active_count: number
   idle_count?: number
   offline_count: number

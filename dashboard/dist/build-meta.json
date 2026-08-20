@@ -1,7 +1,7 @@
 {
   "inputs": {
     "src/api.ts": {
-      "bytes": 6921,
+      "bytes": 6944,
       "imports": [],
       "format": "esm"
     },
@@ -27,7 +27,7 @@
       "format": "esm"
     },
     "src/components/peer-rail.ts": {
-      "bytes": 5069,
+      "bytes": 5146,
       "imports": [],
       "format": "esm"
     },
@@ -120,7 +120,7 @@
     }
   },
   "bytes": {
-    "js": 27639,
+    "js": 27656,
     "css": 12630
   }
 }

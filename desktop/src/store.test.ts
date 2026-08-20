@@ -77,7 +77,9 @@ describe('statusPillLabel (G7)', () => {
       requests: [],
       summary: {
         total: 3,
+        live_count: 3,
         active_count: 2,
+        idle_count: 0,
         offline_count: 1,
         you_peer_id: 'p1',
         last_updated: new Date(Date.now() - 2000).toISOString(),
@@ -90,8 +92,9 @@ describe('statusPillLabel (G7)', () => {
       lastUpdated: Date.now(),
     }
     const label = statusPillLabel(state)
-    // total 3: 2 active (Live), 1 offline → `● 2 Live · × 1 Offline`
-    expect(label).toContain('● 2 Live')
+    // 3 live open sessions, 2 working, 1 offline → `● 3 Live · 2 working · × 1 Offline`
+    expect(label).toContain('● 3 Live')
+    expect(label).toContain('2 working')
     expect(label).toContain('you: KENSEI')
     expect(label).toContain('× 1 Offline')
     expect(label).toContain('live 2s')

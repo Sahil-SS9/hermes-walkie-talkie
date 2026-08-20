@@ -45,7 +45,9 @@ function createPresenceSDK(overrides = {}) {
   ];
   const summary = {
     total: 4,
+    live_count: 4,
     active_count: 3,
+    idle_count: 0,
     offline_count: 1,
     you_peer_id: 'peer-1',
     last_updated: nowIso,
@@ -148,11 +150,11 @@ describe('Presence remediation (G1–G6) — dist bundle behaviour', () => {
 
   after(() => { if (dom) dom.window.close(); });
 
-  it('G2: rail eyebrow shows "Live sessions · N · M live"', async () => {
+  it('G2: rail eyebrow shows "Live sessions · N · M working"', async () => {
     const eyebrow = root.querySelector('#wt-eyebrow');
     assert.ok(eyebrow, 'eyebrow must exist');
     assert.ok(eyebrow.textContent.includes('Live sessions · 4'), `got: ${eyebrow.textContent}`);
-    assert.ok(eyebrow.textContent.includes('3 live'), `got: ${eyebrow.textContent}`);
+    assert.ok(eyebrow.textContent.includes('3 working'), `got: ${eyebrow.textContent}`);
   });
 
   it('G1: dots map the real enum — working→.g, held→.a, idle→.q, offline→.r', async () => {

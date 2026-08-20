@@ -54,12 +54,13 @@ export function offlineSet(state: AppState): Set<string> {
 /** S8: single eyebrow renderer used by both renderPeerRail and updateUI. */
 export function renderEyebrow(state: AppState): string {
   const s = state.summary;
+  const live = s ? (s as { live_count?: number }).live_count ?? 0 : 0;
   const active = s ? s.active_count : 0;
   const idle = s ? (s as { idle_count?: number }).idle_count ?? 0 : 0;
   const offline = s ? s.offline_count : 0;
-  let out = `Live sessions · <span class="wt-rail-count">${state.peers.length}</span>`;
+  let out = `Live sessions · <span class="wt-rail-count">${live}</span>`;
   if (s) {
-    if (active > 0) out += ` &nbsp; <b class="wt-rail-active">${active} live</b>`;
+    if (active > 0 && active < live) out += ` &nbsp; <b class="wt-rail-active">${active} working</b>`;
     if (idle > 0) out += ` &nbsp; <span class="wt-rail-idle">${idle} idle</span>`;
     if (offline > 0) out += ` &nbsp; <span class="wt-rail-off">${offline} off</span>`;
   }
