@@ -58,6 +58,36 @@ def test_peers_rename_binds_invoking_session(mgr):
     assert "Renamed to 'newname'" in result, result
 
 
+def test_peers_send_binds_invoking_session(mgr):
+    """Per-peer Send action must work on a multi-session host.
+
+    Regression: previously raised 'no session_id supplied and multiple
+    sessions active' — Send/Inbox closures were not threaded with the
+    invoking session_id.
+    """
+    from hermes_peer.commands import cmd_peers
+
+    out = cmd_peers("", session_id="sess-A")
+    # Pick a peer that is NOT the invoking session (target B).
+    own = mgr.peer_id_for_session("sess-A")
+    target = next(i for i in out["interactive"]["items"] if i["value"] != own)
+    send = [a for a in target["actions"] if a["key"] == "s"][0]
+    result = send["handler"](target["value"], "hello there")
+    assert result.startswith("Sent:"), result
+
+
+def test_peers_inbox_binds_invoking_session(mgr):
+    """Per-peer Inbox action must work on a multi-session host."""
+    from hermes_peer.commands import cmd_peers
+
+    out = cmd_peers("", session_id="sess-A")
+    own = mgr.peer_id_for_session("sess-A")
+    target = next(i for i in out["interactive"]["items"] if i["value"] != own)
+    inbox = [a for a in target["actions"] if a["key"] == "i"][0]
+    result = inbox["handler"](target["value"])
+    assert "inbox" in result.lower(), result
+
+
 def test_peers_policy_binds_invoking_session(mgr):
     """Per-peer Policy action (children flow) must work multi-session."""
     from hermes_peer.commands import cmd_peers

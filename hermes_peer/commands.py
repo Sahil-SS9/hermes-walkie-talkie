@@ -155,18 +155,18 @@ def cmd_peers(_raw: str, **kwargs) -> str | dict:
         # actions set ``prompt`` and the host calls _prompt_text_input, then
         # invokes the handler with the collected text. Plugin code never
         # calls input().
-        def _act_send(value, text=None, _peer=row):
+        def _act_send(value, text=None, _peer=row, _sid=session_id):
             if not text or not text.strip():
                 return "Cancelled."
             try:
-                rec = mgr.send_message(_peer["peer_id"], text)
+                rec = mgr.send_message(_peer["peer_id"], text, session_id=_sid)
                 return f"Sent: {rec['state']}"
             except ValueError as exc:
                 return f"Send failed: {exc}"
 
-        def _act_inbox(value, text=None, _peer=row):
+        def _act_inbox(value, text=None, _peer=row, _sid=session_id):
             try:
-                messages = mgr.read_inbox()
+                messages = mgr.read_inbox(session_id=_sid)
             except ValueError as exc:
                 return f"Inbox error: {exc}"
             if not messages:
