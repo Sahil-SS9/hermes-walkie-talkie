@@ -142,7 +142,10 @@ class TestCliDispatch:
             action = "list"
 
         run_peer_cli(Args())
-        assert "Held/queued" in capsys.readouterr().out or "empty" in capsys.readouterr().out
+        # New interactive model: inbox list renders the message item (state in
+        # brackets) or an empty marker.
+        out = capsys.readouterr().out
+        assert "queued" in out or "Inbox" in out or "empty" in out
 
         class Args:
             peer_action = "name"

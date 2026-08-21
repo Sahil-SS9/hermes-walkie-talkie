@@ -87,11 +87,13 @@ def register_commands(ctx) -> None:
 
 
 def cmd_peers(_raw: str) -> str | dict:
-    """List live interactive sessions.
+    """List live interactive sessions with nested drill-down actions.
 
     Returns a structured interactive result (dict with ``interactive``) so
-    the host can render an arrow-key picker. The host falls back to printing
-    the plain string for non-interactive surfaces.
+    the host's recursive menu engine can drive: pick a peer → action picker
+    (Send / Inbox / Policy / Rename / Refresh) → each action may prompt or
+    open a nested spec. Esc pops one level. Non-interactive surfaces get the
+    plain string fallback.
     """
     mgr = get_manager()
     if mgr is None:
@@ -105,16 +107,85 @@ def cmd_peers(_raw: str) -> str | dict:
     ]
     items = []
     for row in rows:
-        marker = "▸" if row["peer_id"] == you_id else "○"
-        you = " (you)" if row["peer_id"] == you_id else ""
+        peer_id = row["peer_id"]
+        marker = "▸" if peer_id == you_id else "○"
+        you = " (you)" if peer_id == you_id else ""
         status = f"{STATUS_GLYPH.get(row['status_label'], '×')}{row['status_label']}"
         activity = row["current_activity"] or "—"
+
+        # Per-peer actions — fully declarative. Each handler takes
+        # (peer_id, text=None) and returns a string (printed) or a nested
+        # interactive spec (host recurses). The host owns ALL I/O: free-text
+        # actions set ``prompt`` and the host calls _prompt_text_input, then
+        # invokes the handler with the collected text. Plugin code never
+        # calls input().
+        def _act_send(value, text=None, _peer=row):
+            if not text or not text.strip():
+                return "Cancelled."
+            try:
+                rec = mgr.send_message(_peer["peer_id"], text)
+                return f"Sent: {rec['state']}"
+            except ValueError as exc:
+                return f"Send failed: {exc}"
+
+        def _act_inbox(value, text=None, _peer=row):
+            try:
+                messages = mgr.read_inbox()
+            except ValueError as exc:
+                return f"Inbox error: {exc}"
+            if not messages:
+                return f"{_peer['name']} inbox is empty."
+            lines = [f"{_peer['name']} inbox ({len(messages)}):"]
+            for m in messages:
+                lines.append(
+                    f"  {m['message_id'][:8]}… [{m['state']}] {m['content'][:60]}"
+                )
+            return "\n".join(lines)
+
+        def _act_policy(value, text=None):
+            # text is the chosen policy name (host collects via a nested picker)
+            policy = (text or "").strip().lower()
+            if policy not in ("accept", "hold", "refuse"):
+                return f"Invalid policy '{policy}'."
+            try:
+                mgr.set_policy(policy)
+                return f"Policy set to {policy}."
+            except ValueError as exc:
+                return f"Policy failed: {exc}"
+
+        def _act_rename(value, text=None, _peer=row):
+            name = (text or "").strip()
+            if not name:
+                return "Cancelled."
+            try:
+                mgr.set_alias(name)
+                return f"Renamed to '{name}'."
+            except ValueError as exc:
+                return f"Rename failed: {exc}"
+
+        # Policy sub-menu: nested picker so the user chooses accept/hold/refuse
+        # with arrow keys instead of typing.
+        _policy_menu = {
+            "interactive": {
+                "title": f"Set policy — {row['name']}",
+                "items": [
+                    {"label": "accept  (auto-accept all inbound)", "value": "accept"},
+                    {"label": "hold  (queue for review)", "value": "hold"},
+                    {"label": "refuse  (reject all inbound)", "value": "refuse"},
+                ],
+                "actions": [
+                    {"key": "q", "label": "Back", "handler": lambda v=None, t=None: None},
+                ],
+            }
+        }
+
         items.append({
             "label": f"{marker} {row['name']}{you}  {row['surface']}  {status}  "
                      f"{activity}  {row['profile'] or '-'}",
+            "value": peer_id,
             "detail": (
                 f"Peer: {row['name']}{you}\n"
-                f"  id: {row['peer_id']}\n"
+                f"  id: {peer_id}\n"
                 f"  surface: {row['surface']}\n"
                 f"  status: {status}\n"
                 f"  activity: {activity}\n"
@@ -123,6 +194,15 @@ def cmd_peers(_raw: str) -> str | dict:
                 f"  branch: {row['git_branch'] or '—'}\n"
                 f"  last seen: {row['last_seen'] or '—'}"
             ),
+            "actions": [
+                {"key": "s", "label": "Send message", "handler": _act_send,
+                 "prompt": f"Message to {row['name']}:"},
+                {"key": "i", "label": "Inbox", "handler": _act_inbox},
+                {"key": "p", "label": "Set policy", "handler": _act_policy,
+                 "children": _policy_menu},
+                {"key": "r", "label": "Rename", "handler": _act_rename,
+                 "prompt": f"New name for {row['name']}:"},
+            ],
         })
     if not rows:
         return {"interactive": {
@@ -134,6 +214,9 @@ def cmd_peers(_raw: str) -> str | dict:
         "title": f"Peers · {live} live · {summary['active_count']} working · "
                  f"{summary['idle_count']} idle",
         "items": items,
+        "actions": [
+            {"key": "q", "label": "Quit", "handler": lambda _v=None: None},
+        ],
     }}
 
 
@@ -169,39 +252,88 @@ def _cmd_peers_plain() -> str:
     return "\n".join(lines)
 
 
-def cmd_peer_name(raw: str, **kwargs) -> str:
+def cmd_peer_name(raw: str, **kwargs) -> str | dict:
+    """Set this session's peer alias — guided prompt when called bare."""
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
     name = (raw or "").strip()
+    if name:
+        # Direct form still works: /peer-name <name>
+        try:
+            if not mgr._peers:
+                return "No active peer session to name."
+            mgr.set_alias(name, session_id=kwargs.get("session_id"))
+        except ValueError as exc:
+            return f"Invalid name: {exc}"
+        return f"Peer renamed to '{name}'."
+    # Guided: return a prompt spec; the host collects the name and re-runs.
+    return {"interactive": {
+        "title": "Rename this session",
+        "items": [],
+        "actions": [
+            {"key": "n", "label": "Enter new name", "handler": _rename_handler,
+             "prompt": "New name for this session:"},
+        ],
+        "empty": "Choose an action below.",
+    }}
+
+
+def _rename_handler(_value=None, text=None):
+    mgr = get_manager()
+    name = (text or "").strip()
     if not name:
-        return "Usage: /peer-name <name>"
-    session_id = kwargs.get("session_id")
+        return "Cancelled."
     try:
         if not mgr._peers:
             return "No active peer session to name."
-        mgr.set_alias(name, session_id=session_id)
+        mgr.set_alias(name)
     except ValueError as exc:
         return f"Invalid name: {exc}"
     return f"Peer renamed to '{name}'."
 
 
-def cmd_peer_policy(raw: str, **kwargs) -> str:
+def cmd_peer_policy(raw: str, **kwargs) -> str | dict:
+    """Set the inbound policy — guided menu when called bare."""
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
     policy = (raw or "").strip().lower()
-    if policy not in {p.value for p in Policy}:
-        return f"Invalid policy {policy!r}; expected one of {sorted(p.value for p in Policy)}"
-    session_id = kwargs.get("session_id")
+    if policy:
+        if policy not in {p.value for p in Policy}:
+            return f"Invalid policy {policy!r}; expected one of {sorted(p.value for p in Policy)}"
+        try:
+            mgr.set_policy(policy, session_id=kwargs.get("session_id"))
+        except ValueError as exc:
+            return f"Invalid policy: {exc}"
+        return f"Inbound policy set to '{policy}'."
+    # Guided: arrow-key menu of accept/hold/refuse.
+    return {"interactive": {
+        "title": "Set inbound policy",
+        "items": [
+            {"label": "accept  — auto-accept all inbound", "value": "accept",
+             "handler": _policy_handler},
+            {"label": "hold  — queue for review", "value": "hold",
+             "handler": _policy_handler},
+            {"label": "refuse  — reject all inbound", "value": "refuse",
+             "handler": _policy_handler},
+        ],
+        "empty": "Choose a policy.",
+    }}
+
+
+def _policy_handler(value, text=None):
+    policy = (text or value or "").strip().lower()
+    mgr = get_manager()
     try:
-        mgr.set_policy(policy, session_id=session_id)
+        mgr.set_policy(policy)
     except ValueError as exc:
         return f"Invalid policy: {exc}"
     return f"Inbound policy set to '{policy}'."
 
 
-def cmd_peer_inbox(_raw: str, **kwargs) -> str:
+def cmd_peer_inbox(_raw: str, **kwargs) -> str | dict:
+    """List held/queued messages — selectable, with release/refuse actions."""
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
@@ -212,17 +344,49 @@ def cmd_peer_inbox(_raw: str, **kwargs) -> str:
         return f"Inbox error: {exc}"
     if not messages:
         return "Inbox is empty."
-    lines = [f"Held/queued messages ({len(messages)}):"]
-    for row in messages:
-        lines.append(
-            f"  {row['message_id'][:8]}… [{row['state']}] from {row['sender_peer_id'][:8]}…: "
-            f"{row['content'][:80]}"
-        )
-    lines.append("Release or refuse via the peer_read_inbox tool.")
-    return "\n".join(lines)
+    items = []
+    for m in messages:
+        mid = m["message_id"]
+
+        def _release(value, text=None, _mid=mid):
+            try:
+                ok = mgr.release_message(_mid, session_id=session_id)
+                return f"Released {_mid[:8]}…: {ok}"
+            except ValueError as exc:
+                return f"Release failed: {exc}"
+
+        def _refuse(value, text=None, _mid=mid):
+            try:
+                ok = mgr.refuse_message(_mid, session_id=session_id)
+                return f"Refused {_mid[:8]}…: {ok}"
+            except ValueError as exc:
+                return f"Refuse failed: {exc}"
+
+        items.append({
+            "label": f"{m['message_id'][:8]}… [{m['state']}] from "
+                     f"{m['sender_peer_id'][:8]}…: {m['content'][:48]}",
+            "value": mid,
+            "detail": (
+                f"From: {m['sender_peer_id']}\n"
+                f"State: {m['state']}\n"
+                f"{m['content']}"
+            ),
+            "actions": [
+                {"key": "r", "label": "Release", "handler": _release},
+                {"key": "x", "label": "Refuse", "handler": _refuse},
+            ],
+        })
+    return {"interactive": {
+        "title": f"Inbox ({len(messages)})",
+        "items": items,
+        "actions": [
+            {"key": "q", "label": "Close", "handler": lambda v=None, t=None: None},
+        ],
+    }}
 
 
-def cmd_peer_groups(_raw: str, **kwargs) -> str:
+def cmd_peer_groups(_raw: str, **kwargs) -> str | dict:
+    """List persistent peer groups — drill into a group for members/actions."""
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
@@ -231,20 +395,99 @@ def cmd_peer_groups(_raw: str, **kwargs) -> str:
     except ValueError as exc:
         return f"Group error: {exc}"
     if not groups:
-        return "No groups."
-    lines = [f"Groups ({len(groups)}):"]
+        return {"interactive": {
+            "title": "Groups",
+            "items": [],
+            "actions": [
+                {"key": "c", "label": "Create group", "handler": _group_create_handler,
+                 "prompt": "New group name:"},
+            ],
+            "empty": "No groups yet.",
+        }}
+    items = []
     for g in groups:
-        lines.append(f"  {g['name']}  ({g['group_id'][:8]}…)  {g['members']} members")
-    return "\n".join(lines)
+        gid = g["group_id"]
+
+        def _members(value, text=None, _gid=gid, _gname=g["name"]):
+            try:
+                mem = mgr.group_members_list(_gid)
+            except ValueError as exc:
+                return f"Members error: {exc}"
+            if not mem:
+                return f"Group {_gname}: no members."
+            return "\n".join(f"  {m['agent_id']} ({m['peer_id'][:8]}…)" for m in mem)
+
+        items.append({
+            "label": f"{g['name']}  ({g['group_id'][:8]}…)  {g['members']} members",
+            "value": gid,
+            "detail": f"Group: {g['name']}\nid: {gid}\nmembers: {g['members']}",
+            "actions": [
+                {"key": "m", "label": "List members", "handler": _members},
+                {"key": "a", "label": "Add member", "handler": _group_add_handler,
+                 "prompt": f"Agent id to add to {g['name']}:"},
+                {"key": "d", "label": "Delete group", "handler": _group_delete_handler},
+            ],
+        })
+    return {"interactive": {
+        "title": f"Groups ({len(groups)})",
+        "items": items,
+        "actions": [
+            {"key": "c", "label": "Create group", "handler": _group_create_handler,
+             "prompt": "New group name:"},
+            {"key": "q", "label": "Close", "handler": lambda v=None, t=None: None},
+        ],
+    }}
 
 
-def cmd_peer_group(raw: str, **kwargs) -> str:
+def _group_create_handler(_value=None, text=None):
+    name = (text or "").strip()
+    if not name:
+        return "Cancelled."
+    mgr = get_manager()
+    try:
+        res = mgr.group_create(name)
+        return f"Created group '{res['name']}' ({res['group_id'][:8]}…)."
+    except ValueError as exc:
+        return f"Create failed: {exc}"
+
+
+def _group_add_handler(value, text=None):
+    agent = (text or "").strip()
+    if not agent:
+        return "Cancelled."
+    mgr = get_manager()
+    try:
+        mgr.group_add_member(value, agent)
+        return f"Added {agent} to group."
+    except ValueError as exc:
+        return f"Add failed: {exc}"
+
+
+def _group_delete_handler(value, text=None):
+    mgr = get_manager()
+    try:
+        mgr.group_delete(value)
+        return f"Deleted group {value[:8]}…."
+    except ValueError as exc:
+        return f"Delete failed: {exc}"
+
+
+def cmd_peer_group(raw: str, **kwargs) -> str | dict:
+    """Manage a group: create|add|remove|delete (guided when called bare)."""
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
     parts = (raw or "").split()
     if not parts:
-        return "Usage: /peer-group create <name> | add <group_id> <agent_id> | remove <group_id> <agent_id> | delete <group_id>"
+        # Guided: list actions.
+        return {"interactive": {
+            "title": "Group management",
+            "items": [
+                {"label": "Create group", "value": "create",
+                 "handler": _group_create_handler, "prompt": "New group name:"},
+            ],
+            "empty": "Choose an action.",
+        }}
     action = parts[0].lower()
     session_id = kwargs.get("session_id")
     try:
@@ -265,33 +508,84 @@ def cmd_peer_group(raw: str, **kwargs) -> str:
     return "Usage: /peer-group create <name> | add <group_id> <agent_id> | remove <group_id> <agent_id> | delete <group_id>"
 
 
-def cmd_peer_broadcast(raw: str, **kwargs) -> str:
+def cmd_peer_broadcast(raw: str, **kwargs) -> str | dict:
+    """Broadcast a message to a group — guided: choose group → message → confirm."""
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
     parts = (raw or "").split(maxsplit=1)
-    if len(parts) < 2:
-        return "Usage: /peer-broadcast <group_id> <message>"
-    session_id = kwargs.get("session_id")
+    if len(parts) >= 2:
+        # Direct form: /peer-broadcast <group_id> <message>
+        return _do_broadcast(parts[0], parts[1], kwargs.get("session_id"))
+    # Guided flow.
     try:
-        result = mgr.broadcast_send(parts[0], parts[1], session_id=session_id)
-        summary = result["summary"]
+        groups = mgr.group_list()
+    except ValueError as exc:
+        return f"Group error: {exc}"
+    if not groups:
+        return "No groups to broadcast to. Create one with /peer-group create."
+    items = []
+    for g in groups:
+        gid = g["group_id"]
+
+        def _send(value, text=None, _gid=gid, _gname=g["name"]):
+            if not text or not text.strip():
+                return "Cancelled."
+            return _do_broadcast(_gid, text, kwargs.get("session_id"))
+
+        items.append({
+            "label": f"{g['name']}  ({g['group_id'][:8]}…)  {g['members']} members",
+            "value": gid,
+            "detail": f"Broadcast to: {g['name']}\nid: {gid}\nmembers: {g['members']}",
+            "actions": [
+                {"key": "s", "label": "Compose message", "handler": _send,
+                 "prompt": f"Message to broadcast to {g['name']}:"},
+            ],
+        })
+    return {"interactive": {
+        "title": "Broadcast — choose a group",
+        "items": items,
+        "actions": [
+            {"key": "q", "label": "Close", "handler": lambda v=None, t=None: None},
+        ],
+    }}
+
+
+def _do_broadcast(group_id: str, content: str, session_id) -> str:
+    mgr = get_manager()
+    try:
+        result = mgr.broadcast_send(group_id, content, session_id=session_id)
+        s = result["summary"]
         return (
-            f"Broadcast {summary['broadcast_id'][:8]}…: "
-            f"{summary['queued']} queued, {summary['skipped']} skipped, "
-            f"{summary['unreachable']} unreachable"
+            f"Broadcast {s['broadcast_id'][:8]}…: "
+            f"{s['queued']} queued, {s['skipped']} skipped, {s['unreachable']} unreachable"
         )
     except ValueError as exc:
         return f"Broadcast error: {exc}"
 
 
-def cmd_peer_request(raw: str, **kwargs) -> str:
+def cmd_peer_request(raw: str, **kwargs) -> str | dict:
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
     parts = (raw or "").split()
     if not parts:
-        return "Usage: /peer-request create <agent_id> <summary> | status <request_id> | respond <request_id> <action> | cancel <request_id>"
+        # Guided: choose an action.
+        return {"interactive": {
+            "title": "Peer request",
+            "items": [
+                {"label": "create  — new structured request", "value": "create",
+                 "handler": _request_create_handler,
+                 "prompt": "agent_id summary (agent_id + text):"},
+                {"label": "status  — check a request", "value": "status",
+                 "handler": _request_status_handler, "prompt": "request_id:"},
+                {"label": "respond  — accept/decline", "value": "respond",
+                 "handler": _request_respond_handler, "prompt": "request_id action:"},
+                {"label": "cancel  — withdraw", "value": "cancel",
+                 "handler": _request_cancel_handler, "prompt": "request_id:"},
+            ],
+            "empty": "Choose an action.",
+        }}
     action = parts[0].lower()
     session_id = kwargs.get("session_id")
     try:
@@ -310,6 +604,54 @@ def cmd_peer_request(raw: str, **kwargs) -> str:
     except ValueError as exc:
         return f"Request error: {exc}"
     return "Usage: /peer-request create <agent_id> <summary> | status <request_id> | respond <request_id> <action> | cancel <request_id>"
+
+
+def _request_create_handler(_value=None, text=None):
+    mgr = get_manager()
+    parts = (text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return "Usage: <agent_id> <summary>"
+    try:
+        res = mgr.create_request(parts[0], parts[1])
+        return f"Request {res['request_id'][:8]}… created (delivered={res['delivered']})."
+    except ValueError as exc:
+        return f"Request error: {exc}"
+
+
+def _request_status_handler(_value=None, text=None):
+    mgr = get_manager()
+    rid = (text or "").strip()
+    if not rid:
+        return "Cancelled."
+    try:
+        st = mgr.request_status(rid)
+        return f"Request {st['request_id'][:8]}… [{st['state']}] {st['summary']}"
+    except ValueError as exc:
+        return f"Request error: {exc}"
+
+
+def _request_respond_handler(_value=None, text=None):
+    mgr = get_manager()
+    parts = (text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return "Usage: <request_id> <action>"
+    try:
+        res = mgr.request_respond(parts[0], parts[1])
+        return f"Request {res['request_id'][:8]}… -> {res['state']}"
+    except ValueError as exc:
+        return f"Request error: {exc}"
+
+
+def _request_cancel_handler(_value=None, text=None):
+    mgr = get_manager()
+    rid = (text or "").strip()
+    if not rid:
+        return "Cancelled."
+    try:
+        res = mgr.request_cancel(rid)
+        return f"Request {res['request_id'][:8]}… -> {res['state']}"
+    except ValueError as exc:
+        return f"Request error: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +703,31 @@ def build_peer_cli_parser(subparsers) -> None:
     desktop.add_argument("--home", default=None, help="HERMES_HOME to install into (default: current).")
 
 
+def _render_interactive_plain(spec: dict) -> str:
+    """Flatten an interactive spec into plain text for non-curses surfaces.
+
+    Accepts either a bare spec (``{title, items, ...}``) or a wrapped one
+    (``{"interactive": {...}}``) as returned by command handlers. A plain
+    string passes through unchanged (commands may return strings directly).
+    """
+    if not isinstance(spec, dict):
+        return str(spec)
+    if "interactive" in spec and isinstance(spec["interactive"], dict):
+        spec = spec["interactive"]
+    lines = [spec.get("title", "")]
+    for it in spec.get("items", []):
+        lines.append(f"  {it.get('label', '')}")
+        if it.get("detail"):
+            for dline in it["detail"].splitlines():
+                lines.append(f"    {dline}")
+    actions = spec.get("actions", [])
+    if actions:
+        lines.append("Actions:")
+        for a in actions:
+            lines.append(f"  [{a.get('key', '?')}] {a.get('label', '')}")
+    return "\n".join(lines)
+
+
 def run_peer_cli(args) -> int:
     """Dispatch `hermes peer <action>`; returns an exit code."""
     mgr = get_manager()
@@ -385,7 +752,8 @@ def run_peer_cli(args) -> int:
             print(f"Unknown inbox action {args.action!r}; expected list|release|refuse")
             return 2
         if args.action == "list":
-            print(cmd_peer_inbox(""))
+            out = cmd_peer_inbox("")
+            print(_render_interactive_plain(out) if isinstance(out, dict) else out)
             return 0
         if args.action == "release":
             ok = mgr.release_message(args.message_id) if args.message_id else False
@@ -395,13 +763,16 @@ def run_peer_cli(args) -> int:
         print("refused" if ok else "no held message with that id")
         return 0 if ok else 1
     if action == "name":
-        print(cmd_peer_name(args.name))
+        out = cmd_peer_name(args.name)
+        print(_render_interactive_plain(out) if isinstance(out, dict) else out)
         return 0
     if action == "policy":
-        print(cmd_peer_policy(args.policy))
+        out = cmd_peer_policy(args.policy)
+        print(_render_interactive_plain(out) if isinstance(out, dict) else out)
         return 0
     if action == "groups":
-        print(cmd_peer_groups(""))
+        out = cmd_peer_groups("")
+        print(_render_interactive_plain(out) if isinstance(out, dict) else out)
         return 0
     if action == "group":
         raw = " ".join(

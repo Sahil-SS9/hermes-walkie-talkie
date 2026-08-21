@@ -68,7 +68,11 @@ def mgr(monkeypatch):
 
 
 def test_peer_groups_empty(mgr):
-    assert "No groups" in cmd_peer_groups("")
+    from hermes_peer.commands import _render_interactive_plain
+
+    out = cmd_peer_groups("")
+    assert "Groups" in _render_interactive_plain(out)
+    assert "Create group" in _render_interactive_plain(out)
 
 
 def test_peer_group_create(mgr):
@@ -84,8 +88,14 @@ def test_peer_group_add_remove_delete(mgr):
 
 
 def test_peer_group_usage_on_bad_args(mgr):
-    assert "Usage" in cmd_peer_group("")
-    assert "Usage" in cmd_peer_group("create")
+    from hermes_peer.commands import _render_interactive_plain
+
+    # Bare /peer-group returns a guided menu (no flat Usage string).
+    out = _render_interactive_plain(cmd_peer_group(""))
+    assert "Group management" in out
+    # `create` with no name is an incomplete direct form -> Usage hint.
+    out2 = cmd_peer_group("create")
+    assert "Usage" in out2
 
 
 def test_peer_broadcast(mgr):
@@ -95,7 +105,11 @@ def test_peer_broadcast(mgr):
 
 
 def test_peer_broadcast_usage(mgr):
-    assert "Usage" in cmd_peer_broadcast("g1")
+    from hermes_peer.commands import _render_interactive_plain
+
+    # Bare /peer-broadcast with no group returns a guided group picker.
+    out = _render_interactive_plain(cmd_peer_broadcast("g1"))
+    assert "choose a group" in out or "No groups" in out
 
 
 def test_peer_request_create(mgr):
@@ -111,8 +125,12 @@ def test_peer_request_status_respond_cancel(mgr):
 
 
 def test_request_usage(mgr):
-    assert "Usage" in cmd_peer_request("")
-    assert "Usage" in cmd_peer_request("bogus")
+    from hermes_peer.commands import _render_interactive_plain
+
+    # Bare /peer-request now returns a guided menu listing actions.
+    out = _render_interactive_plain(cmd_peer_request(""))
+    assert "Peer request" in out
+    assert "create" in out
 
 
 def test_request_tools_error_branches(monkeypatch):
@@ -150,21 +168,25 @@ def test_request_tools_error_branches(monkeypatch):
 
 def test_cmd_name_inactive_and_empty(monkeypatch):
     import hermes_peer.commands as cmdmod
+    from hermes_peer.commands import _render_interactive_plain
 
     monkeypatch.setattr(cmdmod, "get_manager", lambda: None)
     assert "not active" in cmdmod.cmd_peer_name("")
     monkeypatch.setattr(cmdmod, "get_manager", lambda: _Mgr())
-    assert "Usage" in cmdmod.cmd_peer_name("  ")
+    # Bare /peer-name now returns a guided rename prompt.
+    out = _render_interactive_plain(cmdmod.cmd_peer_name("  "))
+    assert "Rename this session" in out
 
 
 def test_cmd_groups_inactive_and_rendered(mgr, monkeypatch):
     import hermes_peer.commands as cmdmod
+    from hermes_peer.commands import _render_interactive_plain
 
     monkeypatch.setattr(cmdmod, "get_manager", lambda: None)
     assert "not active" in cmdmod.cmd_peer_groups("")
     monkeypatch.setattr(cmdmod, "get_manager", lambda: mgr)
     mgr.groups = [{"name": "team", "group_id": "g12345678", "members": 2}]
-    out = cmdmod.cmd_peer_groups("")
+    out = _render_interactive_plain(cmdmod.cmd_peer_groups(""))
     assert "team" in out and "2 members" in out
 
 
