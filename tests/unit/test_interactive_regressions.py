@@ -19,8 +19,8 @@ import pytest
 @pytest.fixture()
 def mgr():
     """A real PeerSessionManager with two sessions (multi-session host)."""
-    from hermes_peer.sessions import PeerSessionManager
     from hermes_peer import plugin
+    from hermes_peer.sessions import PeerSessionManager
 
     d = tempfile.mkdtemp()
     os.environ["AGENT_PEER_STATE_DIR"] = d + "/state"
@@ -41,6 +41,9 @@ def mgr():
         m.shutdown()
     except Exception:
         pass
+    finally:
+        # Reset the module global so later tests' register(ctx) is not skipped.
+        plugin._manager = None
 
 
 def test_peers_rename_binds_invoking_session(mgr):
@@ -72,14 +75,14 @@ def test_peers_policy_binds_invoking_session(mgr):
 
 def test_usage_log_written_on_command(mgr):
     """Every command invocation appends a JSONL usage record."""
-    from hermes_peer.commands import cmd_peers, cmd_peer_name
+    from hermes_peer.commands import cmd_peer_name, cmd_peers
 
     cmd_peers("", session_id="sess-A")
     cmd_peer_name("cli-alias", session_id="sess-A")
 
     log_path = Path(mgr._paths.root) / "command-usage.jsonl"
     assert log_path.exists(), "usage log not written"
-    lines = [json.loads(l) for l in log_path.read_text().splitlines() if l.strip()]
+    lines = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
     commands = [r["command"] for r in lines]
     assert "peers" in commands
     assert "peer-name" in commands
@@ -90,7 +93,7 @@ def test_usage_log_written_on_command(mgr):
 
 def test_usage_cli_displays_records(mgr, capsys):
     """`hermes peer usage` prints recent records."""
-    from hermes_peer.commands import cmd_peers, _usage_cli
+    from hermes_peer.commands import _usage_cli, cmd_peers
 
     cmd_peers("", session_id="sess-A")
 
