@@ -63,7 +63,13 @@ class TestSlashCommands:
         mgr = get_manager()
         mgr.on_session_start("sess-a", platform="cli")
         out = env.commands["peers"]["handler"]("")
-        assert "sess-a" in out or "cli" in out
+        # cmd_peers returns an interactive picker spec (dict) — verify it
+        # contains the session as a selectable item.
+        assert isinstance(out, dict), f"expected interactive dict, got {type(out)}"
+        spec = out["interactive"]
+        assert spec["items"], "expected at least one selectable peer"
+        labels = " ".join(i["label"] for i in spec["items"])
+        assert "cli" in labels or "sess-a" in labels
 
     def test_peer_name_command(self, env):
         mgr = get_manager()

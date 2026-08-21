@@ -676,6 +676,12 @@ class PeerSessionManager:
                 session_id = next(iter(self._peers))
             else:
                 raise ValueError("no session_id supplied and multiple sessions active")
+        # Graceful fallback: if the passed session_id isn't in THIS process's
+        # session map but exactly one session is registered, use it. The host
+        # may pass a session id that differs from the registration id (e.g.
+        # after a session reset or a host-side id change).
+        if session_id not in self._peers and len(self._peers) == 1:
+            session_id = next(iter(self._peers))
         rec = self._require_session(session_id)
         return self._store.pending_for(rec.peer_id)
 

@@ -227,8 +227,11 @@ class TestCommandErrorBranches:
         assert "No active peer session" in captured or "Invalid" in captured or "not active" in captured
 
     def test_peers_empty(self, env):
-        """REM-509: /peers with no live peers returns 'No live peers'."""
+        """REM-509: /peers with no live peers returns an empty interactive spec."""
         from hermes_peer.commands import cmd_peers
 
         out = cmd_peers("")
-        assert "No live peers" in out or "not active" in out
+        assert isinstance(out, dict), f"expected interactive dict, got {type(out)}"
+        spec = out["interactive"]
+        assert not spec["items"]
+        assert "No live" in spec["empty"] or "not active" in str(out)

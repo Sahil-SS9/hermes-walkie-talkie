@@ -86,17 +86,75 @@ def register_commands(ctx) -> None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_peers(_raw: str) -> str:
+def cmd_peers(_raw: str) -> str | dict:
+    """List live interactive sessions.
+
+    Returns a structured interactive result (dict with ``interactive``) so
+    the host can render an arrow-key picker. The host falls back to printing
+    the plain string for non-interactive surfaces.
+    """
     mgr = get_manager()
     if mgr is None:
         return "hermes-peer is not active in this process."
     summary = mgr.summary()
     you_id = summary["you_peer_id"]
-    lines = [
-        f"Live sessions · {summary['total']}   ● {summary['active_count']} active   "
-        f"× {summary['offline_count']} offline   [live {summary['last_updated'] or '—'}]"
+    live = summary.get("live_count", 0)
+    rows = [
+        row for row in summary["peers"]
+        if row["surface"] != "gateway" and not row["offline"]
     ]
-    for row in summary["peers"]:
+    items = []
+    for row in rows:
+        marker = "▸" if row["peer_id"] == you_id else "○"
+        you = " (you)" if row["peer_id"] == you_id else ""
+        status = f"{STATUS_GLYPH.get(row['status_label'], '×')}{row['status_label']}"
+        activity = row["current_activity"] or "—"
+        items.append({
+            "label": f"{marker} {row['name']}{you}  {row['surface']}  {status}  "
+                     f"{activity}  {row['profile'] or '-'}",
+            "detail": (
+                f"Peer: {row['name']}{you}\n"
+                f"  id: {row['peer_id']}\n"
+                f"  surface: {row['surface']}\n"
+                f"  status: {status}\n"
+                f"  activity: {activity}\n"
+                f"  profile: {row['profile'] or 'default'}\n"
+                f"  cwd: {row['cwd']}\n"
+                f"  branch: {row['git_branch'] or '—'}\n"
+                f"  last seen: {row['last_seen'] or '—'}"
+            ),
+        })
+    if not rows:
+        return {"interactive": {
+            "title": "Peers",
+            "items": [],
+            "empty": "No live interactive sessions.",
+        }}
+    return {"interactive": {
+        "title": f"Peers · {live} live · {summary['active_count']} working · "
+                 f"{summary['idle_count']} idle",
+        "items": items,
+    }}
+
+
+def _cmd_peers_plain() -> str:
+    """Plain-text fallback for non-interactive surfaces (kept for tests)."""
+    mgr = get_manager()
+    if mgr is None:
+        return "hermes-peer is not active in this process."
+    summary = mgr.summary()
+    you_id = summary["you_peer_id"]
+    live = summary.get("live_count", 0)
+    rows = [
+        row for row in summary["peers"]
+        if row["surface"] != "gateway" and not row["offline"]
+    ]
+    lines = [
+        f"Live sessions · {live}   ● {summary['active_count']} working   "
+        f"○ {summary['idle_count']} idle   × {summary['offline_count']} offline   "
+        f"[live {summary['last_updated'] or '—'}]"
+    ]
+    for row in rows:
         marker = "▸" if row["peer_id"] == you_id else "○"
         you = " (you)" if row["peer_id"] == you_id else ""
         status = f"{STATUS_GLYPH.get(row['status_label'], '×')}{row['status_label']}"
@@ -106,8 +164,8 @@ def cmd_peers(_raw: str) -> str:
             f"  {marker} {row['name']}{you}  {row['surface']}  {status}  "
             f"{activity}  {row['profile'] or '-'}  {repo}"
         )
-    if summary["total"] == 0:
-        return "No live peers."
+    if not rows:
+        return "No live interactive sessions."
     return "\n".join(lines)
 
 
@@ -312,7 +370,7 @@ def run_peer_cli(args) -> int:
     action = getattr(args, "peer_action", None)
 
     if action == "list":
-        print(cmd_peers(""))
+        print(_cmd_peers_plain())
         return 0
     if action == "doctor":
         report = mgr.doctor()
