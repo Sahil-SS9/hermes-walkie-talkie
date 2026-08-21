@@ -35,6 +35,37 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Docs: architecture, security, groups-and-broadcasts, request-workflows,
   desktop, windows, operations runbook, upgrade guide, compatibility.
 
+### Changed
+
+- Presence: live peer count now means *open interactive sessions*
+  (probe-live, non-gateway surfaces). Two open CLI sessions show `2 Live`,
+  not one "working" session. Gateway/cron automation is excluded from the
+  ambient count.
+- Initial-offline race: brand-new sessions get a 10s grace period and are
+  never mislabelled "offline" before their first message.
+- Profile identification: peer-presence surfaces display the active profile
+  badge when non-default.
+
+### Added
+
+- Interactive slash commands: `/peers`, `/peer-broadcast`, `/peer-inbox`,
+  `/peer-groups`, `/peer-group`, `/peer-policy`, `/peer-name`,
+  `/peer-request` now run guided, step-by-step menus (arrow-key pickers →
+  actions → prompts → nested menus) when called bare or with incomplete
+  arguments. Direct-argument forms still work for power users.
+- Command usage logging: every invocation is appended to
+  `command-usage.jsonl`; `hermes peer usage --limit N` displays recent
+  records.
+
+### Fixed
+
+- Multi-session hosts: per-peer Send/Inbox/Policy/Rename actions no longer
+  fail with "no session_id supplied and multiple sessions active" — the
+  invoking session is threaded through every action.
+- Host TUI: free-text prompts (message, rename, group name, request fields)
+  use a thread-safe modal instead of silently cancelling on the slash-worker
+  thread.
+
 ### Notes
 
 - Native Windows CI is verified on GitHub Actions `windows-latest` for the
