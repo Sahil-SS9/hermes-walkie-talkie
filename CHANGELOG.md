@@ -65,6 +65,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Host TUI: free-text prompts (message, rename, group name, request fields)
   use a thread-safe modal instead of silently cancelling on the slash-worker
   thread.
+- Windows: peer registration works again. `agent_peer/agent_identity.py`
+  gated the POSIX mode-bit guard and `os.fchmod` behind
+  `os.name == "posix"` (matching `paths.py`), so the owner-only check no
+  longer rejects every file under `%LOCALAPPDATA%` (which stats as 0o666),
+  and identity refresh no longer crashes with `AttributeError`. Re-minting
+  writes `agent_id.tmp` + `os.replace` instead of truncating in place, so a
+  crash mid-write leaves the previous identity intact rather than a 0-byte
+  brick every later session trips over.
 
 ### Notes
 

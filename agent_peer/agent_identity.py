@@ -16,6 +16,8 @@ from pathlib import Path
 from .errors import ConfigurationError
 from .paths import same_owner
 
+_POSIX_MODE_SEMANTICS = os.name == "posix"
+
 logger = logging.getLogger("agent_peer.agent_identity")
 
 _AGENT_ID_FILE = "agent_id"  # inside HERMES_HOME/agent-peer/
@@ -42,7 +44,7 @@ def load_or_create_agent_id(hermes_home: Path) -> str:
         raise ConfigurationError(f"agent identity file must not be a symlink: {path}")
     try:
         st = path.stat()
-        if not same_owner(st) or (st.st_mode & 0o077):
+        if not same_owner(st) or (_POSIX_MODE_SEMANTICS and st.st_mode & 0o077):
             raise ConfigurationError(
                 f"agent identity file must be owner-only: {path}"
             )
@@ -59,15 +61,21 @@ def load_or_create_agent_id(hermes_home: Path) -> str:
         except ValueError:
             logger.warning("agent identity file corrupt; refreshing %s", path)
 
-    # Mint a fresh identity and persist it owner-only.
+    # Mint a fresh identity and persist it owner-only. The value lands in a
+    # temp sibling first and is moved into place with os.replace, so a crash
+    # mid-write can never truncate the existing file: re-minting stays
+    # idempotent instead of bricking the identity at 0 bytes.
     fresh = str(uuid.uuid4())
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.fchmod(fd, 0o600)
+        if _POSIX_MODE_SEMANTICS:
+            os.fchmod(fd, 0o600)
         os.write(fd, fresh.encode("utf-8"))
         os.fsync(fd)
     finally:
         os.close(fd)
+    os.replace(tmp, path)
     return fresh
 
 
