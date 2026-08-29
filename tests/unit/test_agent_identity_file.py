@@ -50,6 +50,48 @@ def test_invalid_stored_id_is_refreshed(tmp_path):
     assert a != "not-a-uuid"
 
 
+def test_failed_publish_leaves_existing_file_intact(tmp_path, monkeypatch):
+    """A crash during re-mint must not truncate the identity file.
+
+    The pre-fix implementation opened the target with O_TRUNC directly, so a
+    crash mid-write bricked the identity at 0 bytes. The temp-file +
+    os.replace design keeps the old value readable until the publish step,
+    and a later call heals the corrupt state instead of failing forever.
+    """
+    home = tmp_path
+    load_or_create_agent_id(home)  # establish a working layout
+    path = home / "agent-peer" / "agent_id"
+    path.write_text("not-a-uuid")  # force the re-mint branch
+
+    real_replace = os.replace
+
+    def boom(src, dst):
+        raise OSError("simulated crash before publish")
+
+    monkeypatch.setattr(os, "replace", boom)
+    try:
+        load_or_create_agent_id(home)
+        published_anyway = True
+    except OSError:
+        published_anyway = False
+    assert not published_anyway
+    # The failed attempt did not truncate what was on disk.
+    assert path.read_text(encoding="utf-8").strip() == "not-a-uuid"
+
+    monkeypatch.setattr(os, "replace", real_replace)
+    healed = load_or_create_agent_id(home)
+    uuid.UUID(healed)  # a valid fresh identity, persisted and reloadable
+    assert read_agent_id(home) == healed
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason=(
+        "Windows st_mode reports 0o666 regardless of os.chmod, so the "
+        "'refuse world-readable identity' contract is untestable there, "
+        "not satisfied there"
+    ),
+)
 def test_world_readable_identity_refused(tmp_path):
     path = tmp_path / "agent-peer" / "agent_id"
     path.parent.mkdir(mode=0o700)
