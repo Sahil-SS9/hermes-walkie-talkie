@@ -116,7 +116,6 @@ class TestSendFailureReceipts:
         assert rec.state.value == "invalid"
 
     def test_send_bad_receipt_state_maps_invalid(self, mgr):
-        from agent_peer.models import Envelope as E
 
         sender = _record()
         mgr.register_peer(sender, on_message=lambda e: ReceiptState.QUEUED)

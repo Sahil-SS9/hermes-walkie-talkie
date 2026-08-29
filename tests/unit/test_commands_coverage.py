@@ -9,7 +9,6 @@ paths. All unit-level, reusing the plugin ``env`` fixture pattern from
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -172,6 +171,7 @@ class TestUsageCli:
         mgr.on_session_open("s6", platform="cli")
         C._usage_log("seed-cmd", "", session_id="s6")  # ensure the log exists
         import builtins
+
         import hermes_peer.commands as cm
 
         real_open = builtins.open

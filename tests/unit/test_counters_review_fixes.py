@@ -17,8 +17,6 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
-import pytest
-
 import agent_peer.constants as C
 from agent_peer.models import PeerRecord, Presence
 from hermes_peer import sessions as S
@@ -159,7 +157,6 @@ class TestGraceWindow:
         assert S._STARTING_GRACE_SECONDS >= C.HEARTBEAT_INTERVAL * 1.5
 
     def test_peer_between_heartbeats_not_offline(self):
-        import datetime as _dt
 
         r = _record(last_seen=(datetime.now(UTC)
                                - timedelta(seconds=C.HEARTBEAT_INTERVAL * 1.2)).isoformat())

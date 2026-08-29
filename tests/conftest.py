@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_peer._e2e_support import core_root_usable, default_hermes_core_root
+
 
 @pytest.fixture
 def tmp_path() -> Iterator[Path]:
@@ -55,8 +57,6 @@ def fresh_state_dir(isolated_runtime):
     _, state = isolated_runtime
     return state
 
-
-from hermes_peer._e2e_support import core_root_usable, default_hermes_core_root
 
 _CORE_ROOT = Path(default_hermes_core_root())
 
