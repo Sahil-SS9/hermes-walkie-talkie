@@ -106,6 +106,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   dashboard refresh (which reads `/peers` and `/peers/summary`) probes each
   peer socket once per cycle instead of twice; the fenced `repair_stale`
   path deliberately probes fresh and is not cached.
+- Guided-menu hardening: the `/peer-request` create handler now answers
+  delivery/discovery failures (e.g. no live session for the recipient agent)
+  as a normal "Request error: …" reply instead of raising past the slash
+  command layer — matching the JSON tool contract (`peer_request_create`).
 
 ### Notes
 

@@ -687,6 +687,8 @@ def _request_create_handler(_value=None, text=None, session_id=None):
         return f"Request {res['request_id'][:8]}… created (delivered={res['delivered']})."
     except ValueError as exc:
         return f"Request error: {exc}"
+    except Exception as exc:  # noqa: BLE001 - DiscoveryError etc: stay a CLI answer
+        return f"Request error: {exc}"
 
 
 def _request_status_handler(_value=None, text=None, session_id=None):
