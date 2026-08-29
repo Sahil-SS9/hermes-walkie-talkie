@@ -27,6 +27,9 @@ export interface SummaryView {
   active_count: number;
   idle_count?: number;
   offline_count: number;
+  // Review issue 6: probe-live automation surfaces (gateway/cron), kept out
+  // of live/idle/offline but counted so the buckets can sum to `total`.
+  gateway_count?: number;
   // R9: canonical wire key. `you_peer_id` is the backend contract from
   // GET /peers/summary — do NOT rename to camelCase here; internal state
   // mirrors it as AppState.youPeerId (snake wire / camel internal split).

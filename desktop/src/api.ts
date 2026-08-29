@@ -26,6 +26,8 @@ export interface SummaryView {
   active_count: number
   idle_count?: number
   offline_count: number
+  // Review issue 6: probe-live automation surfaces; buckets sum to total.
+  gateway_count?: number
   you_peer_id: string | null
   last_updated: string
   peers: Array<{

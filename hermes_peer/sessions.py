@@ -62,20 +62,32 @@ def _pid_alive(pid: int) -> bool:
 
 
 # Registration grace window: a brand-new session whose socket hasn't been
-# probed yet is 'starting', never 'offline' (issue 2).
-_STARTING_GRACE_SECONDS = 10.0
+# probed yet is 'starting', never 'offline' (issue 2). Sized to cover a full
+# heartbeat interval (plus a poll's worth of slack) so a healthy-but-busy
+# peer mid-heartbeat-cycle cannot flap offline on every poll (review issue 5).
+from agent_peer.constants import HEARTBEAT_INTERVAL
+
+_STARTING_GRACE_SECONDS = max(10.0, HEARTBEAT_INTERVAL * 1.5)
+
+
+def _age_seconds(record: PeerRecord) -> float | None:
+    """Age of a record's last_seen in seconds; None when unparseable."""
+    seen = record.last_seen
+    if not seen:
+        return None
+    try:
+        parsed = datetime.fromisoformat(seen)
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - parsed).total_seconds()
 
 
 def _is_starting(record: PeerRecord) -> bool:
     """True when a record is too young to classify as offline (starting)."""
-    seen = record.last_seen
-    if not seen:
-        return False
-    try:
-        parsed = datetime.fromisoformat(seen)
-    except ValueError:
-        return False
-    return (datetime.now(UTC) - parsed).total_seconds() < _STARTING_GRACE_SECONDS
+    age = _age_seconds(record)
+    return age is not None and age < _STARTING_GRACE_SECONDS
 
 
 def _surface_of(platform: str | None) -> str:
@@ -266,6 +278,7 @@ class PeerSessionManager:
         if alias_override:
             self._aliases.set_alias(bound.peer_id, alias_override)
         logger.info("hermes-peer: opened peer %s (%s) on %s", bound.name, bound.peer_id, surface)
+        self._publish_presence("peer_open", peer_id=bound.peer_id, surface=surface, status=bound.status)
 
     def on_session_start(self, session_id: str, platform: str | None = None, **kwargs) -> None:
         """Turn-start: the exact session's peer becomes working.
@@ -297,6 +310,12 @@ class PeerSessionManager:
             return
         self._runtime.update_record(updated)
         self._peers[session_id] = updated
+        self._publish_presence(
+            "peer_status",
+            peer_id=updated.peer_id,
+            surface=updated.surface,
+            status=updated.status,
+        )
 
     def on_session_end(self, session_id: str, platform: str | None = None, **kwargs) -> None:
         if self._session_to_peer.get(session_id) is not None:
@@ -356,6 +375,7 @@ class PeerSessionManager:
         self._session_policies.pop(peer_id, None)
         self._drop_presence(session_id)
         logger.info("hermes-peer: removed peer for session %s (%s)", session_id, reason)
+        self._publish_presence("peer_close", peer_id=peer_id, reason=reason)
 
     def shutdown(self) -> None:
         self._stop_heartbeat_thread()
@@ -456,58 +476,98 @@ class PeerSessionManager:
     def summary(self, *, include_self: bool = True) -> dict:
         """Aggregate presence summary for the rail/status chrome (G2, G5, G6).
 
-        Single data source for every ambient surface. The pool is scoped to
-        RECORDS WHOSE PID IS ALIVE — stale registry files from dead processes
-        are excluded so the totals reflect real running sessions, not
-        accumulated history.
+        Single data source for every ambient surface. Both the per-peer rows
+        AND the counters come from the SAME snapshot — the rail can always
+        be reconciled against the eyebrow (review issue 3).
+
+        The pool is scoped to records whose PID is alive. A record with
+        pid=0/None (legacy or test writers) is kept only when its socket
+        probe answers, so it is never silently dropped from ``total`` while
+        still listed by ``GET /peers`` (review issue 6).
 
         Classification (per record):
           - live     = probe-live (socket answers DISCOVER) AND interactive
                        surface (cli/tui/desktop — NOT gateway/cron automation)
-          - working  = live AND status working/held (actively mid-turn)
-          - idle     = live AND status idle (open, reachable, not mid-turn)
+          - working  = live AND status working/held, where a ``working``
+                       status older than the STALE_THRESHOLD heartbeat window
+                       is reconciled to idle at DISPLAY time (the record is
+                       never mutated) — a hung turn no longer pins
+                       ``active_count`` forever (review issue 4)
+          - idle     = live AND status idle (or stale-working, per above)
           - offline  = PID alive but probe failed, OUTSIDE the registration
                        grace period (a brand-new session whose socket is not
                        yet probe-able is 'starting', never 'offline')
+          - gateway  = probe-live automation surfaces; reported separately in
+                       ``gateway_count`` so the buckets sum to ``total``
+                       (review issue 6)
         ``live_count`` is the open-session count the ambient chrome should
         show; ``active_count`` (working/held) stays for backward compat.
         ``record.status`` is never mutated (the ALIVE probe compares
         identity['status'] exactly).
+
+        A tz-naive ``last_seen`` used to raise TypeError here and 500 the
+        endpoint; unparseable ages now classify as offline (probe failed)
+        instead of crashing (review issue 8).
         """
+        from agent_peer.constants import STALE_THRESHOLD
+
         records = self.list_peers(include_self=include_self)
-        # PID-liveness filter: drop stale registry files whose process is dead.
-        snapshot = [
-            r for r in self._registry.list_peers()
-            if r.pid and _pid_alive(r.pid)
-        ]
+        live_ids = {r.peer_id for r in records}
+        # ONE snapshot feeds rows AND counts: registry entries whose PID is
+        # alive, or whose probe authority answers despite pid=0/None.
+        snapshot = []
+        for r in self._registry.list_peers():
+            if r.pid and _pid_alive(r.pid):
+                snapshot.append(r)
+            elif not r.pid and r.peer_id in live_ids:
+                snapshot.append(r)  # pid-less record with a live probe
         if not include_self:
             snapshot = [r for r in snapshot if r.peer_id not in self._peer_handles]
-        live_ids = {r.peer_id for r in records}
         peers: list[dict] = []
         total = len(snapshot)
         live = 0
         active = 0
         idle = 0
         offline = 0
+        gateway = 0
         last_updated = ""
         for record in snapshot:
-            # Grace period: a record registered < 10s ago whose probe hasn't
-            # landed yet is 'starting' — never 'offline' (issue 2).
-            is_starting = _is_starting(record)
-            is_live = record.peer_id in live_ids and record.surface != Surface.GATEWAY.value
-            if record.peer_id not in live_ids and not is_starting:
-                offline += 1
+            age = _age_seconds(record)
+            is_starting = age is not None and age < _STARTING_GRACE_SECONDS
+            is_gateway = record.surface == Surface.GATEWAY.value
+            is_live = record.peer_id in live_ids and not is_gateway
+            if is_gateway and record.peer_id in live_ids:
+                gateway += 1
             elif is_live:
                 live += 1
-                if record.status in (Presence.WORKING.value, Presence.HELD.value):
+                # Stale-status reconciliation (review issue 4): a
+                # probe-live record whose last heartbeat is older than the
+                # stale threshold cannot be trusted to still be mid-turn —
+                # display idle instead of a frozen working ghost. The
+                # stored record is never mutated.
+                status = record.status
+                if (
+                    status in (Presence.WORKING.value, Presence.HELD.value)
+                    and age is not None
+                    and age > STALE_THRESHOLD
+                ):
+                    status = Presence.IDLE.value
+                if status in (Presence.WORKING.value, Presence.HELD.value):
                     active += 1
                 else:
                     idle += 1
-            # Probe-live but gateway surface (cron/automation): counted in
-            # total but NOT in the ambient live/idle/offline buckets.
+            elif record.peer_id not in live_ids and not is_starting:
+                offline += 1
+            # 'starting' records (probe not yet landed, inside the grace
+            # window) deliberately land in total but no bucket — documented
+            # in _is_starting and surfaced via status_label below.
+            is_offline = (
+                record.peer_id not in live_ids
+                and not is_starting
+                and not (is_gateway and record.peer_id in live_ids)
+            )
             if record.last_seen and record.last_seen > last_updated:
                 last_updated = record.last_seen
-            is_offline = record.peer_id not in live_ids and not is_starting
             peers.append(
                 {
                     "peer_id": record.peer_id,
@@ -530,6 +590,7 @@ class PeerSessionManager:
             "active_count": active,
             "idle_count": idle,
             "offline_count": offline,
+            "gateway_count": gateway,
             "you_peer_id": self.my_peer_id(),
             "last_updated": last_updated,
             "peers": peers,
@@ -658,6 +719,20 @@ class PeerSessionManager:
         """Content-free metrics + bounded local event for one inbound (P6)."""
         self._metrics.record_delivery(sent=delivered, reason="" if delivered else state.value)
         self._events.publish("message", state=state.value, delivered=delivered)
+
+    def _publish_presence(self, kind: str, **fields) -> None:
+        """Publish one content-free presence event to the local broker.
+
+        The dashboard's events socket previously carried ONLY inbound
+        "message" events, so with the WS connected (the normal case) the
+        rail/eyebrow counters never refreshed on peer open/close/status
+        changes (review issue 2). Presence events are content-free: peer
+        id, surface and status only.
+        """
+        try:
+            self._events.publish(kind, **fields)
+        except Exception:  # noqa: BLE001 - events must never break delivery
+            logger.debug("hermes-peer: presence event publish failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Outbound + inbox operations used by tools/commands (P8)

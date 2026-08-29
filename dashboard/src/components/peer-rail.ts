@@ -58,10 +58,12 @@ export function renderEyebrow(state: AppState): string {
   const active = s ? s.active_count : 0;
   const idle = s ? (s as { idle_count?: number }).idle_count ?? 0 : 0;
   const offline = s ? s.offline_count : 0;
+  const gateway = s ? (s as { gateway_count?: number }).gateway_count ?? 0 : 0;
   let out = `Live sessions · <span class="wt-rail-count">${live}</span>`;
   if (s) {
     if (active > 0 && active < live) out += ` &nbsp; <b class="wt-rail-active">${active} working</b>`;
     if (idle > 0) out += ` &nbsp; <span class="wt-rail-idle">${idle} idle</span>`;
+    if (gateway > 0) out += ` &nbsp; <span class="wt-rail-idle">${gateway} auto</span>`;
     if (offline > 0) out += ` &nbsp; <span class="wt-rail-off">${offline} off</span>`;
   }
   return out;

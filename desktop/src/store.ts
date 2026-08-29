@@ -54,9 +54,11 @@ export function statusPillLabel(state: PeerUiState): string {
   const active = s.active_count ?? 0
   const idle = (s as { idle_count?: number }).idle_count ?? 0
   const offline = s.offline_count ?? 0
+  const gateway = (s as { gateway_count?: number }).gateway_count ?? 0
   if (live > 0) parts.push(`● ${live} Live`)
   if (active > 0 && active < live) parts.push(`${active} working`)
   if (idle > 0) parts.push(`○ ${idle} Idle`)
+  if (gateway > 0) parts.push(`◦ ${gateway} auto`)
   if (offline > 0) parts.push(`× ${offline} Offline`)
   if (youName) parts.push(`you: ${youName}`)
   if (state.lastUpdated != null && s.last_updated) parts.push(`live ${timeAgoFromIso(s.last_updated)}`)

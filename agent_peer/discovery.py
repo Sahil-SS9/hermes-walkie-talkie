@@ -30,8 +30,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 import stat
+import threading
+import time as _time
 import uuid as uuidlib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +50,17 @@ from .registry import Registry
 logger = logging.getLogger("agent_peer.discovery")
 
 _DISCOVER_TIMEOUT = 1.0  # bounded probe budget (seconds)
+
+# Endpoint kind used to address a peer's live listener. Windows peers listen
+# on named pipes (no AF_UNIX), so the probe/bound endpoints must be built
+# with kind="named-pipe" there — otherwise the Windows backend rejects the
+# endpoint (UnreachableError) and every probe fails closed (review issue 1).
+_POSIX_TRANSPORT = os.name == "posix"
+
+
+def _transport_kind() -> str:
+    """Endpoint transport kind for THIS platform ("unix" | "named-pipe")."""
+    return "unix" if _POSIX_TRANSPORT else "named-pipe"
 
 
 class DiscoveryError(AgentPeerError):
@@ -89,40 +103,45 @@ def _parse_record(
         return None
     if record.socket_path:
         sock = Path(record.socket_path)
-        # Safe containment: the socket must live under the runtime root's
-        # sockets dir (which may relocate to a short /tmp path when the root
-        # is deep — see RuntimePaths).
-        try:
-            sock_resolved = sock.resolve()
-            root_resolved = paths.root.resolve()
-            sockets_resolved = paths.sockets_dir.resolve()
-            if not (
-                root_resolved in sock_resolved.parents
-                or sockets_resolved in sock_resolved.parents
-                or sock_resolved.parent == sockets_resolved
-            ):
-                logger.warning("discovery: socket outside runtime root: %s", sock)
+        if _POSIX_TRANSPORT:
+            # POSIX-only socket fence: containment, socket-node type,
+            # owner-only mode and the uid/inode authority fence. Named
+            # pipes on Windows have no filesystem node, so none of these
+            # checks can apply there (review issue 1).
+            # Safe containment: the socket must live under the runtime
+            # root's sockets dir (which may relocate to a short /tmp path
+            # when the root is deep — see RuntimePaths).
+            try:
+                sock_resolved = sock.resolve()
+                root_resolved = paths.root.resolve()
+                sockets_resolved = paths.sockets_dir.resolve()
+                if not (
+                    root_resolved in sock_resolved.parents
+                    or sockets_resolved in sock_resolved.parents
+                    or sock_resolved.parent == sockets_resolved
+                ):
+                    logger.warning("discovery: socket outside runtime root: %s", sock)
+                    return None
+            except OSError:
                 return None
-        except OSError:
-            return None
-        expected = paths.socket_path_for(record.peer_id, record.instance_id)
-        if sock != expected:
-            logger.warning("discovery: socket path does not match peer instance: %s", sock)
-            return None
-        try:
-            sock_st = sock.lstat()
-        except FileNotFoundError:
-            return None if require_socket else record
-        except OSError:
-            return None
-        if not stat.S_ISSOCK(sock_st.st_mode):
-            return None
-        if not same_owner(sock_st) or stat.S_IMODE(sock_st.st_mode) & 0o077:
-            logger.warning("discovery: refusing non-owner-only socket %s", sock)
-            return None
-        if record.socket_uid != sock_st.st_uid or record.socket_inode != sock_st.st_ino:
-            logger.warning("discovery: socket authority mismatch for %s", record.peer_id)
-            return None
+            expected = paths.socket_path_for(record.peer_id, record.instance_id)
+            if sock != expected:
+                logger.warning("discovery: socket path does not match peer instance: %s", sock)
+                return None
+            try:
+                sock_st = sock.lstat()
+            except FileNotFoundError:
+                return None if require_socket else record
+            except OSError:
+                return None
+            if not stat.S_ISSOCK(sock_st.st_mode):
+                return None
+            if not same_owner(sock_st) or stat.S_IMODE(sock_st.st_mode) & 0o077:
+                logger.warning("discovery: refusing non-owner-only socket %s", sock)
+                return None
+            if record.socket_uid != sock_st.st_uid or record.socket_inode != sock_st.st_ino:
+                logger.warning("discovery: socket authority mismatch for %s", record.peer_id)
+                return None
     return record
 
 
@@ -163,7 +182,7 @@ def _probe_once(record: PeerRecord, backend=None) -> dict | None:
     try:
         payload = encode_envelope(request).encode("utf-8")
         reply_payload = backend.request(
-            TransportEndpoint(kind="unix", address=record.socket_path),
+            TransportEndpoint(kind=_transport_kind(), address=record.socket_path),
             payload,
             timeout=_DISCOVER_TIMEOUT,
         )
@@ -220,6 +239,47 @@ class DiscoveryService:
         self._registry = registry or Registry(self._paths)
         self._backend = backend or get_transport_backend()
         self._path_backend = path_backend or get_path_backend()
+        # Review issue 8: a short-lived probe cache. One dashboard refresh
+        # used to run two full probe passes (/peers then /peers/summary),
+        # each re-probing every peer socket with a 1s deadline. A tiny TTL
+        # cache keeps concurrent reads cheap without weakening liveness:
+        # presence truth still comes from the socket, just not re-queried
+        # twice within the same poll cycle.
+        self._probe_cache: dict[str, tuple[float, dict | None]] = {}
+        self._probe_cache_lock = threading.Lock()
+        self._probe_cache_ttl = 2.0  # seconds
+
+    def _cache_ready(self) -> bool:
+        return getattr(self, "_probe_cache", None) is not None and getattr(
+            self, "_probe_cache_lock", None
+        ) is not None
+
+    def _cached_probe(self, record: PeerRecord) -> dict | None:
+        """Probe with a short TTL keyed by (peer_id, socket_path, last_seen).
+
+        Tolerates instances created via ``__new__`` (test doubles): the
+        cache attributes are lazily initialised when missing.
+        """
+        if not self._cache_ready():
+            self._probe_cache = {}
+            self._probe_cache_lock = threading.Lock()
+            self._probe_cache_ttl = 2.0
+        key = f"{record.peer_id}\0{record.socket_path}\0{record.last_seen}"
+        now = _time.monotonic()
+        with self._probe_cache_lock:
+            hit = self._probe_cache.get(key)
+            if hit is not None and now - hit[0] < self._probe_cache_ttl:
+                return hit[1]
+        identity = _probe_once(record, backend=self._backend)
+        with self._probe_cache_lock:
+            # Bounded: drop expired entries when the cache grows past a page.
+            if len(self._probe_cache) > 256:
+                self._probe_cache = {
+                    k: v for k, v in self._probe_cache.items()
+                    if now - v[0] < self._probe_cache_ttl
+                }
+            self._probe_cache[key] = (now, identity)
+        return identity
 
     # -- listing ---------------------------------------------------------
 
@@ -250,7 +310,7 @@ class DiscoveryService:
         for record in self._snapshot():
             if record.peer_id in excluded:
                 continue
-            identity = _probe_once(record)
+            identity = self._cached_probe(record)
             if identity is None:
                 continue
             # Re-read the record AFTER the probe to catch a replacement
@@ -328,7 +388,10 @@ class DiscoveryService:
         }
 
     def _probe(self, record: PeerRecord) -> bool:
-        return _probe_once(record, backend=self._backend) is not None
+        # Cached (TTL 2s): resolve_peer may be called several times per
+        # dashboard cycle; the fenced repair path re-probes directly and is
+        # deliberately NOT cached.
+        return self._cached_probe(record) is not None
 
     # -- deterministic agent -> peer resolution (P3.7, G2.5) ----------------
 
@@ -455,7 +518,7 @@ class DiscoveryService:
         # fails (e.g. forged instance), if the socket path still accepts a
         # connection, a genuine peer is bound there — refuse cleanup entirely.
         if sock_path is not None and sock_path.exists() and self._backend.bound(
-            TransportEndpoint(kind="unix", address=str(sock_path)),
+            TransportEndpoint(kind=_transport_kind(), address=str(sock_path)),
             timeout=_DISCOVER_TIMEOUT,
         ):
             logger.warning("discovery: repair refused (live listener on %s) for %s", sock_path, record.peer_id)
@@ -485,7 +548,7 @@ def _socket_bound(path: Path) -> bool:
 
     backend = get_transport_backend()
     return backend.bound(
-        TransportEndpoint(kind="unix", address=str(path)),
+        TransportEndpoint(kind=_transport_kind(), address=str(path)),
         timeout=_DISCOVER_TIMEOUT,
     )
 

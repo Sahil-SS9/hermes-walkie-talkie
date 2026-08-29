@@ -73,6 +73,39 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   writes `agent_id.tmp` + `os.replace` instead of truncating in place, so a
   crash mid-write leaves the previous identity intact rather than a 0-byte
   brick every later session trips over.
+- Windows: peer discovery works again. `agent_peer/discovery.py` gated the
+  POSIX-only socket fence (lstat/S_ISSOCK/uid-inode authority) behind
+  `os.name == "posix"` — named pipes have no filesystem node, so every
+  Windows record was filtered out before probing — and the DISCOVER probe
+  now addresses records with `kind="named-pipe"` on Windows instead of the
+  hardcoded `"unix"` the Windows backend rejects. Peer registration from the
+  identity fix above is now completable by listing/resolution.
+- Dashboard counters no longer freeze while the events WebSocket is
+  connected. Presence transitions (`peer_open`/`peer_status`/`peer_close`,
+  content-free) are now published to the local event broker, the events
+  socket carries them, and a slow background poll (20s while the WS looks
+  healthy, 5s otherwise) runs unconditionally so cross-process churn always
+  converges instead of starving until the socket breaks.
+- Peer rail and counters come from ONE snapshot: the dashboard derives rail
+  rows from `/peers/summary` (falling back to `/peers` on older backends),
+  ending the split-brain where rows and counts were two separate probe
+  passes that disagreed under churn. A dead write in `updateUI` that
+  overwrote the eyebrow's live count with the raw `/peers` length is
+  removed.
+- `summary()` reconciliation: a probe-live peer whose `working` status is
+  older than the stale threshold is shown as idle at display time (a hung
+  turn no longer pins `active_count` forever — the stored record is never
+  mutated); the registration grace window now covers a full heartbeat cycle
+  (≥1.5× interval) so busy-but-healthy peers stop flapping offline between
+  polls; gateway-surface peers get their own `gateway_count` bucket so the
+  counters can sum to `total` (rendered as "N auto" in the rail and desktop
+  pill); pid-less records are kept when their probe answers instead of
+  vanishing from `total`; a tz-naive or garbage `last_seen` classifies
+  instead of raising a 500 from `/peers/summary`.
+- Probing cost: a 2s bounded TTL probe cache in `DiscoveryService` means one
+  dashboard refresh (which reads `/peers` and `/peers/summary`) probes each
+  peer socket once per cycle instead of twice; the fenced `repair_stale`
+  path deliberately probes fresh and is not cached.
 
 ### Notes
 
