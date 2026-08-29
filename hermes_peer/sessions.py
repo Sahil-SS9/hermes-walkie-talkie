@@ -22,6 +22,7 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
+from agent_peer.constants import HEARTBEAT_INTERVAL
 from agent_peer.discovery import DiscoveryService
 from agent_peer.identity import AliasStore, generate_instance_id, generate_peer_id, host_metadata
 from agent_peer.models import (
@@ -65,8 +66,6 @@ def _pid_alive(pid: int) -> bool:
 # probed yet is 'starting', never 'offline' (issue 2). Sized to cover a full
 # heartbeat interval (plus a poll's worth of slack) so a healthy-but-busy
 # peer mid-heartbeat-cycle cannot flap offline on every poll (review issue 5).
-from agent_peer.constants import HEARTBEAT_INTERVAL
-
 _STARTING_GRACE_SECONDS = max(10.0, HEARTBEAT_INTERVAL * 1.5)
 
 

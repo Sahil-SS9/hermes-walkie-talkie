@@ -27,10 +27,11 @@ from pathlib import Path
 
 import pytest
 
+from hermes_peer._e2e_support import default_hermes_core_root
+
 pytestmark = pytest.mark.e2e
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-from hermes_peer._e2e_support import core_root_usable, default_hermes_core_root
 
 CORE_ROOT = Path(default_hermes_core_root())
 HERMES_PYTHON = os.environ.get("HERMES_PYTHON", "/home/kensei/repos/KenseiAgent/.venv/bin/python")
