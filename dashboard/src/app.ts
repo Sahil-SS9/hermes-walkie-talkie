@@ -286,6 +286,25 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
     if (summaryRes.status === 'fulfilled') {
       state.summary = summaryRes.value;
       state.youPeerId = summaryRes.value.you_peer_id || null;
+      // R3: ONE data source — the summary snapshot carries the SAME rows the
+      // counters were computed from (PID-aware, with offline labels). The
+      // separate `/peers` probe pass previously disagreed with it under any
+      // churn (review issue 3). `/peers` remains the fallback when the
+      // summary endpoint is missing (older backend).
+      const summaryPeers = summaryRes.value.peers || [];
+      if (summaryPeers.length > 0) {
+        state.peers = summaryPeers.map((p) => ({
+          peer_id: p.peer_id,
+          agent_id: p.agent_id,
+          name: p.name,
+          profile: p.profile,
+          surface: p.surface,
+          status: p.offline ? 'offline' : p.status,
+          current_activity: p.current_activity,
+          cwd: p.cwd,
+          git_branch: p.git_branch,
+        }));
+      }
     }
     const failed = settled.filter((r) => r.status === 'rejected');
     const firstErr = failed[0] && 'reason' in failed[0]
@@ -314,14 +333,25 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
     updateUI();
   });
 
-  // R1: bounded polling fallback. The WS is an accelerator; when it drops,
-  // poll on a cadence so the surface stays live instead of freezing until a
-  // manual action. Stops automatically once the socket is connected again.
-  const POLL_INTERVAL_MS = 5000;
+  // R1: bounded polling fallback. The WS is an accelerator, NOT a complete
+  // feed: presence events now ride the broker too, but events can still be
+  // dropped (bounded buffers, other processes' brokers) and cross-process
+  // presence transitions are only observable by probing. A slow background
+  // poll ALWAYS runs so counters converge instead of freezing while the WS
+  // looks healthy (review issue 2); when the WS is down it stays the only
+  // refresh path.
+  const POLL_INTERVAL_MS_MS_WS = 5000; // WS degraded: full refresh cadence
+  const POLL_INTERVAL_MS_WS_CONNECTED = 20_000; // WS healthy: slow safety net
+  let lastPoll = 0;
   const pollTimer = window.setInterval(() => {
-    if (state.wsState === 'connected') return;
+    const now = Date.now();
+    const interval = state.wsState === 'connected'
+      ? POLL_INTERVAL_MS_WS_CONNECTED
+      : POLL_INTERVAL_MS_MS_WS;
+    if (now - lastPoll < interval) return;
+    lastPoll = now;
     void refresh();
-  }, POLL_INTERVAL_MS);
+  }, 1000);
 
   // ---------------------------------------------------------------------------
   // updateUI — respects selectedPeer so focus detail survives tab changes
@@ -337,8 +367,10 @@ export function initApp(sdk: HermesPluginSDK, rootEl?: HTMLElement): () => void 
       for (const peer of state.peers) {
         railList.appendChild(buildPeerItem(peer, offlinePeers));
       }
-      const count = peerRail.querySelector('.wt-rail-count');
-      if (count) count.textContent = String(state.peers.length);
+      // Review issue 9: the eyebrow below owns the visible count
+      // (live_count from the summary snapshot). Writing `state.peers.length`
+      // here was a dead write that would resurrect a disagreeing count if
+      // renderEyebrow ever skipped the span — removed.
     }
 
     // Eyebrow active count (G2) + liveness line (G5)
