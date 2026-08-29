@@ -56,7 +56,14 @@ def fresh_state_dir(isolated_runtime):
     return state
 
 
-_CORE_ROOT = Path(os.environ.get("HERMES_CORE_ROOT", "/home/kensei/worktrees/hermes-walkie-talkie-core-remediation-r2"))
+from hermes_peer._e2e_support import core_root_usable, default_hermes_core_root
+
+_CORE_ROOT = Path(default_hermes_core_root())
+
+
+def _core_root_usable(root: Path) -> bool:
+    """True when the root actually contains a runnable Hermes core."""
+    return core_root_usable(root)
 
 
 @pytest.fixture
@@ -68,5 +75,5 @@ def require_hermes_core():
     dev box or a CI job that provisions the checkout. On runners without it,
     skip cleanly instead of failing on a hardcoded path.
     """
-    if not _CORE_ROOT.exists():
+    if not _core_root_usable(_CORE_ROOT):
         pytest.skip(f"HERMES_CORE_ROOT missing: {_CORE_ROOT}")
