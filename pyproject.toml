@@ -1,6 +1,6 @@
 [project]
 name = "hermes-walkie-talkie"
-version = "0.1.0rc1"
+version = "0.1.0rc2"
 description = "Same-machine, cross-session agent messaging for AI harnesses — Hermes first."
 readme = "README.md"
 license = { text = "MIT" }

@@ -110,6 +110,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   delivery/discovery failures (e.g. no live session for the recipient agent)
   as a normal "Request error: …" reply instead of raising past the slash
   command layer — matching the JSON tool contract (`peer_request_create`).
+- CI hygiene: the coverage gates pass again (line >90%, trust/delivery
+  branches >85%) with 35 new regression tests across runtime transport
+  failure paths and the guided command handlers; e2e `HERMES_CORE_ROOT`
+  now resolves portably (env → interpreter install → legacy dev path) so
+  the real-process tests run anywhere a core checkout exists instead of
+  skipping on a maintainer-only absolute path.
 
 ### Notes
 
@@ -117,7 +123,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   named-pipe, SID/DACL and real two-process exchange gates (run 31723046182).
   A Windows wheel-install smoke and full Desktop/Electron interaction remain
   separate follow-up coverage.
-- This is an unreleased release candidate (`v0.1.0-rc1`); no Git tag,
+- This is an unreleased release candidate (`v0.1.0-rc2`); no Git tag,
   package publication or live activation has occurred.
 
 ## [0.1.0-rc1] — unreleased local review candidate
