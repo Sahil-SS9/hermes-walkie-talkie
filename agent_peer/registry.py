@@ -273,6 +273,15 @@ class Registry:
         ``handshake_alive(pid, instance_id)`` comes from the transport layer
         (P5): the socket handshake is the only authority. With no handshake
         callback, prune removes nothing (fail safe).
+
+        H-3 (2026-09-01): the **pid half** of this contract has no correct
+        cross-platform implementation inside this repo unless the callback
+        routes its pid check through
+        ``agent_peer.pid_liveness.pid_alive`` — the historical reflex of
+        ``os.kill(pid, 0)`` KILLS the target on Windows. Production wiring
+        (doctor --repair, scheduled prune) must supply a callback whose pid
+        half delegates to ``pid_liveness.pid_alive`` and whose instance
+        half stays the transport handshake.
         """
         now = now or datetime.now(UTC)
         if handshake_alive is None:

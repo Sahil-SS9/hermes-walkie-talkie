@@ -487,7 +487,17 @@ class DiscoveryService:
         sock_path = Path(record.socket_path) if record.socket_path else None
         try:
             reg_st = reg_path.stat()
-            sock_st = sock_path.stat() if sock_path is not None and sock_path.exists() else None
+            # H-2 (2026-09-01): the socket-stat fence is POSIX-only. On
+            # Windows the logical pipe path has no filesystem node, so
+            # sock_path.stat() raised OSError -> silent return -> stale
+            # records accumulated forever (presence rot). On Windows the
+            # socket fences are simply not applicable; registry-level fences
+            # below still apply.
+            sock_st = (
+                sock_path.stat()
+                if _POSIX_TRANSPORT and sock_path is not None and sock_path.exists()
+                else None
+            )
         except OSError:
             return
         # Re-read the record immediately before mutation.
@@ -513,11 +523,14 @@ class DiscoveryService:
         # Liveness challenge one more time before mutation.
         if self._probe(record):
             return
-        # NG-07 fence: a path must never be unlinked while an untracked live
-        # listener remains bound to it. Even when the record's identity probe
-        # fails (e.g. forged instance), if the socket path still accepts a
-        # connection, a genuine peer is bound there — refuse cleanup entirely.
-        if sock_path is not None and sock_path.exists() and self._backend.bound(
+        # NG-07 fence: a transport address must never be cleaned up while an
+        # untracked live listener remains bound to it. Even when the record's
+        # identity probe fails (e.g. forged instance), if a listener still
+        # accepts at that endpoint, a genuine peer is bound there — refuse
+        # cleanup. BOUND-CHECK IS CROSS-PLATFORM (backend.bound on Windows
+        # uses WaitNamedPipe), so do not gate it on the socket file existing:
+        # named-pipe paths have no filesystem node.
+        if sock_path is not None and self._backend.bound(
             TransportEndpoint(kind=_transport_kind(), address=str(sock_path)),
             timeout=_DISCOVER_TIMEOUT,
         ):
@@ -528,7 +541,9 @@ class DiscoveryService:
             reg_path.unlink()
         except FileNotFoundError:
             return
-        if sock_path is not None:
+        if sock_path is not None and _POSIX_TRANSPORT:
+            # Named pipes on Windows have no filesystem node to unlink; they
+            # disappear when the (dead) server's handles close.
             try:
                 sock_path.unlink()
             except FileNotFoundError:

@@ -16,6 +16,8 @@ same as the kanban plugin) so OAuth/loopback modes all work.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
@@ -26,6 +28,15 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 MANAGER_IMPORT_ERROR = "hermes-peer is not active in this process"
+
+# M-5 (2026-09-01): /peers/summary triggers a full registry walk + PID-liveness
+# sweep. The host chrome caches for 2s (hermes_cli/peer_presence.py
+# _CACHE_SECONDS); the dashboard route did not, so every dashboard poll hit the
+# registry directly. Same TTL here keeps both surfaces consistent and bounds
+# the probe cost. Benign race on concurrent refresh (last write wins).
+_SUMMARY_TTL_SECONDS = 2.0
+_summary_lock = threading.Lock()
+_summary_cache: dict = {"at": 0.0, "value": None}
 
 
 def _manager():
@@ -109,9 +120,24 @@ def peers() -> dict:
 def peers_summary() -> dict:
     """Aggregate presence summary (G2/G5/G6): active/offline counts, the
     local ``you_peer_id`` and the newest heartbeat timestamp. Offline is
-    derived at this layer; no status mutation ever happens here."""
+    derived at this layer; no status mutation ever happens here.
+
+    M-5: served through a short TTL cache matching the host chrome's
+    ``_CACHE_SECONDS = 2.0`` so dashboard polling cannot hammer the
+    registry/PID-liveness sweep on every poll.
+    """
     mgr = _manager()
-    return mgr.summary()
+    now = time.monotonic()
+    with _summary_lock:
+        cached_at = _summary_cache["at"]
+        cached_value = _summary_cache["value"]
+    if cached_value is not None and now - cached_at < _SUMMARY_TTL_SECONDS:
+        return cached_value
+    fresh = mgr.summary()
+    with _summary_lock:
+        _summary_cache["at"] = time.monotonic()
+        _summary_cache["value"] = fresh
+    return fresh
 
 
 # ---------------------------------------------------------------------------

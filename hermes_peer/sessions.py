@@ -48,18 +48,17 @@ logger = logging.getLogger("hermes_peer.sessions")
 
 
 def _pid_alive(pid: int) -> bool:
-    """True when a process with the given PID is running (signal 0 probe)."""
-    if not pid or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists but owned by another user
-    except OSError:
-        return False
-    return True
+    """True when a process with the given PID is running (signal-0 style probe).
+
+    C-1 (2026-09-01): DELEGATES to the cross-platform primitive in
+    ``agent_peer.pid_liveness``. The historical body ``os.kill(pid, 0)``
+    KILLS the target on Windows (sig 0 collides with CTRL_C_EVENT at the C
+    level -> GenerateConsoleCtrlEvent). Keep this wrapper thin: the
+    platform-specific semantics live in one audited place now.
+    """
+    from agent_peer.pid_liveness import pid_alive
+
+    return pid_alive(pid)
 
 
 # Registration grace window: a brand-new session whose socket hasn't been
@@ -71,7 +70,21 @@ _STARTING_GRACE_SECONDS = max(10.0, HEARTBEAT_INTERVAL * 1.5)
 
 def _age_seconds(record: PeerRecord) -> float | None:
     """Age of a record's last_seen in seconds; None when unparseable."""
-    seen = record.last_seen
+    parsed = _parse_ts(record.last_seen)
+    if parsed is None:
+        return None
+    return (datetime.now(UTC) - parsed).total_seconds()
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    """Parse an ISO timestamp, tolerating naive values (assumed UTC).
+
+    Returns None when unparseable — callers classify as they see fit
+    (review issue 8). Shared by _age_seconds and the summary() last_updated
+    max() so every timestamp comparison is tz-aware (M-3: raw string
+    comparison of mixed-offset ISO strings sorted wrong).
+    """
+    seen = value
     if not seen:
         return None
     try:
@@ -80,7 +93,7 @@ def _age_seconds(record: PeerRecord) -> float | None:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return (datetime.now(UTC) - parsed).total_seconds()
+    return parsed
 
 
 def _is_starting(record: PeerRecord) -> bool:
@@ -529,7 +542,7 @@ class PeerSessionManager:
         idle = 0
         offline = 0
         gateway = 0
-        last_updated = ""
+        last_updated_dt: datetime | None = None
         for record in snapshot:
             age = _age_seconds(record)
             is_starting = age is not None and age < _STARTING_GRACE_SECONDS
@@ -565,8 +578,18 @@ class PeerSessionManager:
                 and not is_starting
                 and not (is_gateway and record.peer_id in live_ids)
             )
-            if record.last_seen and record.last_seen > last_updated:
-                last_updated = record.last_seen
+            # M-3: tz-aware max over parsed timestamps. The old raw string
+            # comparison misordered mixed-offset ISO strings ("+00:00" vs
+            # "Z" vs naive) and could surface a stale heartbeat.
+            record_seen = _parse_ts(record.last_seen)
+            if record_seen is not None and (
+                last_updated_dt is None or record_seen > last_updated_dt
+            ):
+                last_updated_dt = record_seen
+            status_label = (
+                "offline" if is_offline
+                else ("starting" if record.peer_id not in live_ids else record.status)
+            )
             peers.append(
                 {
                     "peer_id": record.peer_id,
@@ -576,7 +599,7 @@ class PeerSessionManager:
                     "surface": record.surface,
                     "status": record.status,
                     "offline": is_offline,
-                    "status_label": "offline" if is_offline else record.status,
+                    "status_label": status_label,
                     "current_activity": record.current_activity,
                     "cwd": record.cwd,
                     "git_branch": record.git_branch,
@@ -591,7 +614,7 @@ class PeerSessionManager:
             "offline_count": offline,
             "gateway_count": gateway,
             "you_peer_id": self.my_peer_id(),
-            "last_updated": last_updated,
+            "last_updated": last_updated_dt.isoformat() if last_updated_dt else "",
             "peers": peers,
         }
 

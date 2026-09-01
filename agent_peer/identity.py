@@ -26,15 +26,24 @@ def generate_instance_id() -> str:
 
 
 def _git_metadata(cwd: str) -> dict:
-    """Best-effort git repo root + branch; never raises."""
+    """Best-effort git repo root + branch; never raises.
+
+    L-3 (2026-09-01): text=True with no encoding uses the locale codec; on
+    Windows (cp1252) a git path outside cp1252 raised UnicodeDecodeError
+    inside host_metadata -> registration failure. Force UTF-8 with
+    errors='replace' (git config -i output is UTF-8; mojibake beats a
+    failed registration).
+    """
     try:
         root = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             cwd=cwd, capture_output=True, text=True, timeout=3,
+            encoding="utf-8", errors="replace",
         )
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=cwd, capture_output=True, text=True, timeout=3,
+            encoding="utf-8", errors="replace",
         )
         repo_root = root.stdout.strip() if root.returncode == 0 else ""
         branch_name = branch.stdout.strip() if branch.returncode == 0 else ""

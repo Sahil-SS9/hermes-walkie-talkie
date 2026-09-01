@@ -226,7 +226,10 @@ class PeerRuntimeManager:
                             listener.close()
                         self._stop_windows_listener(record.peer_id)
                     else:
-                        self._stop_windows_listener(record.peer_id)
+                        # L-2: POSIX never started a Windows wait thread
+                        # (_start_windows_listener is Windows-only), so the
+                        # old dead _stop_windows_listener call here was a
+                        # no-op footgun — removed.
                         listener.close()
                 self._peers.pop(record.peer_id, None)
                 self._handlers.pop(record.peer_id, None)
@@ -314,8 +317,9 @@ class PeerRuntimeManager:
                         listener.close_fd()  # type: ignore[attr-defined]
                     self._stop_windows_listener(peer_id)
                 else:
+                    # L-2: no Windows wait thread exists on POSIX — the dead
+                    # _stop_windows_listener call here was a no-op; removed.
                     listener.close_fd()  # type: ignore[attr-defined]
-                    self._stop_windows_listener(peer_id)
 
             # 4. Close accepted connections belonging to this listener/peer.
             for conn in list(self._connections.keys()):

@@ -48,10 +48,19 @@ def install_desktop_plugin(*, home: Path | None = None) -> Path:
         )
     dest_dir = target_home / "desktop-plugins" / PLUGIN_NAME
     dest_dir.mkdir(parents=True, exist_ok=True)
+    import logging
+
+    _log = logging.getLogger("hermes_peer.desktop_install")
     for name in ("plugin.js", "style.css"):
         src = source_dir / name
         if src.exists():
             shutil.copyfile(src, dest_dir / name)
+        else:
+            # M-4 (2026-09-01): silently shipping a half bundle produced
+            # partially-styled panels with no signal. plugin.js missing is a
+            # hard error (checked above); style.css missing degrades the
+            # panel — say so.
+            _log.warning("bundled Desktop asset missing: %s (installed pane will be unstyled)", src)
     return dest_dir / "plugin.js"
 
 

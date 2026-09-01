@@ -43,13 +43,13 @@ function S(r, e = Date.now()) {
   return n < 60 ? `${n}m ago` : `${Math.floor(n / 60)}h ago`;
 }
 function k(r) {
-  var m;
+  var u;
   const e = r.summary;
   if (!e) return "";
   const s = e.live_count ?? 0;
   if (s < 2) return "";
-  const t = (m = (e.peers || []).find((u) => u.peer_id === e.you_peer_id)) == null ? void 0 : m.name, n = [], i = e.active_count ?? 0, c = e.idle_count ?? 0, o = e.offline_count ?? 0;
-  return s > 0 && n.push(`● ${s} Live`), i > 0 && i < s && n.push(`${i} working`), c > 0 && n.push(`○ ${c} Idle`), o > 0 && n.push(`× ${o} Offline`), t && n.push(`you: ${t}`), r.lastUpdated != null && e.last_updated && n.push(`live ${S(e.last_updated)}`), n.join(" · ");
+  const t = (u = (e.peers || []).find((b) => b.peer_id === e.you_peer_id)) == null ? void 0 : u.name, n = [], i = e.active_count ?? 0, c = e.idle_count ?? 0, o = e.offline_count ?? 0, m = e.gateway_count ?? 0;
+  return s > 0 && n.push(`● ${s} Live`), i > 0 && i < s && n.push(`${i} working`), c > 0 && n.push(`○ ${c} Idle`), m > 0 && n.push(`◦ ${m} auto`), o > 0 && n.push(`× ${o} Offline`), t && n.push(`you: ${t}`), r.lastUpdated != null && e.last_updated && n.push(`live ${S(e.last_updated)}`), n.join(" · ");
 }
 function q(r, e) {
   let s = 0;

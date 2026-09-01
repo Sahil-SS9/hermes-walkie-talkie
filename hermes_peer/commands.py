@@ -22,7 +22,29 @@ STATUS_GLYPH = {
     "held": "●",
     "closing": "●",
     "idle": "○",
+    "starting": "·",  # M-2: grace-window sessions are NOT offline
 }
+
+# H-1 (2026-09-01): Python 3.11-3.13 on Windows gives piped/spawned stdout the
+# ANSI codepage (cp1252 on Western Windows; PEP 528 covers only the live
+# console). cp1252 cannot encode ●/○/×/▸/·/…, so printing the peer listing
+# raised UnicodeEncodeError before a single row rendered. Every glyph that
+# reaches stdout goes through _g(), which degrades to ASCII when the current
+# stdout encoding cannot represent it.
+_ASCII_GLYPHS = {"●": "*", "○": "o", "×": "x", "▸": ">", "·": "|", "—": "-", "…": "..."}
+
+
+def _g(ch: str) -> str:
+    """Glyph *ch*, ASCII-degraded when stdout cannot encode it (H-1)."""
+    import sys
+
+    enc = getattr(sys.stdout, "encoding", None)
+    if enc:
+        try:
+            ch.encode(enc)
+        except (UnicodeEncodeError, LookupError):
+            return _ASCII_GLYPHS.get(ch, ch.encode("ascii", "replace").decode())
+    return ch
 
 
 def _usage_log(command: str, raw_args: str = "", *, session_id: str | None = None, outcome: str = "ok") -> None:
@@ -144,10 +166,10 @@ def cmd_peers(_raw: str, **kwargs) -> str | dict:
     items = []
     for row in rows:
         peer_id = row["peer_id"]
-        marker = "▸" if peer_id == you_id else "○"
+        marker = _g("▸") if peer_id == you_id else _g("○")
         you = " (you)" if peer_id == you_id else ""
-        status = f"{STATUS_GLYPH.get(row['status_label'], '×')}{row['status_label']}"
-        activity = row["current_activity"] or "—"
+        status = f"{_g(STATUS_GLYPH.get(row['status_label'], '×'))}{row['status_label']}"
+        activity = row["current_activity"] or _g("—")
 
         # Per-peer actions — fully declarative. Each handler takes
         # (peer_id, text=None) and returns a string (printed) or a nested
@@ -272,16 +294,16 @@ def _cmd_peers_plain() -> str:
         if row["surface"] != "gateway" and not row["offline"]
     ]
     lines = [
-        f"Live sessions · {live}   ● {summary['active_count']} working   "
-        f"○ {summary['idle_count']} idle   × {summary['offline_count']} offline   "
-        f"[live {summary['last_updated'] or '—'}]"
+        f"Live sessions {_g('·')} {live}   {_g('●')} {summary['active_count']} working   "
+        f"{_g('○')} {summary['idle_count']} idle   {_g('×')} {summary['offline_count']} offline   "
+        f"[live {summary['last_updated'] or _g('—')}]"
     ]
     for row in rows:
-        marker = "▸" if row["peer_id"] == you_id else "○"
+        marker = _g("▸") if row["peer_id"] == you_id else _g("○")
         you = " (you)" if row["peer_id"] == you_id else ""
-        status = f"{STATUS_GLYPH.get(row['status_label'], '×')}{row['status_label']}"
+        status = f"{_g(STATUS_GLYPH.get(row['status_label'], '×'))}{row['status_label']}"
         repo = row["git_branch"] or row["cwd"]
-        activity = row["current_activity"] or "—"
+        activity = row["current_activity"] or _g("—")
         lines.append(
             f"  {marker} {row['name']}{you}  {row['surface']}  {status}  "
             f"{activity}  {row['profile'] or '-'}  {repo}"
@@ -846,70 +868,91 @@ def _usage_cli(args) -> int:
     return 0
 
 
+def _safe_print(*args, sep: str = " ", end: str = "\n", flush: bool = False) -> None:
+    """print() hardened against non-UTF stdout (H-1).
+
+    The `hermes peer` CLI can run with piped/spawned stdout under the ANSI
+    codepage on Windows (cp1252); bare print() raises UnicodeEncodeError on
+    any glyph outside that codepage (including text relayed from interactive
+    specs, e.g. message content). Pre-encodes with errors='replace' so a
+    listing still prints (degraded) instead of crashing.
+    """
+    import sys
+
+    text = sep.join(str(a) for a in args)
+    enc = getattr(sys.stdout, "encoding", None)
+    if text and enc:
+        try:
+            text.encode(enc)
+        except (UnicodeEncodeError, LookupError):
+            text = text.encode(enc, "replace").decode(enc, "replace")
+    print(text, end=end, flush=flush)
+
+
 def run_peer_cli(args) -> int:
     """Dispatch `hermes peer <action>`; returns an exit code."""
     mgr = get_manager()
     if mgr is None:
-        print("hermes-peer is not active in this process.")
+        _safe_print("hermes-peer is not active in this process.")
         return 1
     action = getattr(args, "peer_action", None)
 
     if action == "list":
-        print(_cmd_peers_plain())
+        _safe_print(_cmd_peers_plain())
         return 0
     if action == "doctor":
         report = mgr.doctor()
-        print(json.dumps(report, indent=2))
+        _safe_print(json.dumps(report, indent=2))
         return 0 if report["ok"] else 1
     if action == "usage":
         return _usage_cli(args)
     if action == "send":
         result = peer_send_cli(mgr, args)
-        print(result)
+        _safe_print(result)
         return 0
     if action == "inbox":
         if args.action not in ("list", "release", "refuse"):
-            print(f"Unknown inbox action {args.action!r}; expected list|release|refuse")
+            _safe_print(f"Unknown inbox action {args.action!r}; expected list|release|refuse")
             return 2
         if args.action == "list":
             out = cmd_peer_inbox("")
-            print(_render_interactive_plain(out) if isinstance(out, dict) else out)
+            _safe_print(_render_interactive_plain(out) if isinstance(out, dict) else out)
             return 0
         if args.action == "release":
             ok = mgr.release_message(args.message_id) if args.message_id else False
-            print("released" if ok else "no held message with that id")
+            _safe_print("released" if ok else "no held message with that id")
             return 0 if ok else 1
         ok = mgr.refuse_message(args.message_id) if args.message_id else False
-        print("refused" if ok else "no held message with that id")
+        _safe_print("refused" if ok else "no held message with that id")
         return 0 if ok else 1
     if action == "name":
         out = cmd_peer_name(args.name)
-        print(_render_interactive_plain(out) if isinstance(out, dict) else out)
+        _safe_print(_render_interactive_plain(out) if isinstance(out, dict) else out)
         return 0
     if action == "policy":
         out = cmd_peer_policy(args.policy)
-        print(_render_interactive_plain(out) if isinstance(out, dict) else out)
+        _safe_print(_render_interactive_plain(out) if isinstance(out, dict) else out)
         return 0
     if action == "groups":
         out = cmd_peer_groups("")
-        print(_render_interactive_plain(out) if isinstance(out, dict) else out)
+        _safe_print(_render_interactive_plain(out) if isinstance(out, dict) else out)
         return 0
     if action == "group":
         raw = " ".join(
             part for part in (args.action, args.arg1, args.arg2 or "") if part
         )
-        print(cmd_peer_group(raw))
+        _safe_print(cmd_peer_group(raw))
         return 0
     if action == "broadcast":
-        print(cmd_peer_broadcast(f"{args.group_id} {args.message}"))
+        _safe_print(cmd_peer_broadcast(f"{args.group_id} {args.message}"))
         return 0
     if action == "request":
         raw = " ".join(part for part in (args.action, args.arg1, args.arg2 or "", args.arg3 or "") if part)
-        print(cmd_peer_request(raw))
+        _safe_print(cmd_peer_request(raw))
         return 0
     if action == "desktop":
         return run_desktop_cli(mgr, args)
-    print("Usage: hermes peer {list|send|inbox|name|policy|doctor|groups|group|broadcast|request|desktop}")
+    _safe_print("Usage: hermes peer {list|send|inbox|name|policy|doctor|groups|group|broadcast|request|desktop}")
     return 2
 
 
@@ -929,17 +972,17 @@ def run_desktop_cli(mgr, args) -> int:
     try:
         if args.action == "install":
             target = install_desktop_plugin(home=home)
-            print(f"Installed Hermes Peer Desktop plugin at {target}")
+            _safe_print(f"Installed Hermes Peer Desktop plugin at {target}")
             return 0
         if args.action == "remove":
             removed = remove_desktop_plugin(home=home)
-            print("Removed Desktop plugin." if removed else "Desktop plugin not present.")
+            _safe_print("Removed Desktop plugin." if removed else "Desktop plugin not present.")
             return 0 if removed else 1
         status = desktop_plugin_status(home=home)
-        print(json.dumps(status, indent=2))
+        _safe_print(json.dumps(status, indent=2))
         return 0 if status.get("installed") else 1
     except (ValueError, OSError) as exc:
-        print(f"Desktop plugin error: {exc}")
+        _safe_print(f"Desktop plugin error: {exc}")
         return 1
 
 

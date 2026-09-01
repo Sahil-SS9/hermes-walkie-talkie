@@ -135,7 +135,7 @@ wheels = [
 
 [[package]]
 name = "hermes-walkie-talkie"
-version = "0.1.0rc1"
+version = "0.1.0rc2"
 source = { editable = "." }
 
 [package.optional-dependencies]
