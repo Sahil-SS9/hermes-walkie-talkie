@@ -760,7 +760,12 @@ def build_peer_cli_parser(subparsers) -> None:
     peer_sub = p.add_subparsers(dest="peer_action", required=True)
 
     peer_sub.add_parser("list", help="List live peers.")
-    peer_sub.add_parser("doctor", help="Diagnose runtime dir, seam and registry.")
+    doctor = peer_sub.add_parser("doctor", help="Diagnose runtime dir, seam and registry.")
+    doctor.add_argument(
+        "--repair",
+        action="store_true",
+        help="Remove only stale peer records that fail the fenced liveness checks.",
+    )
 
     send = peer_sub.add_parser("send", help="Send a message to a peer.")
     send.add_argument("target", help="Exact peer_id or unambiguous name.")
@@ -901,7 +906,8 @@ def run_peer_cli(args) -> int:
         _safe_print(_cmd_peers_plain())
         return 0
     if action == "doctor":
-        report = mgr.doctor()
+        repair = bool(getattr(args, "repair", False))
+        report = mgr.doctor(repair=True) if repair else mgr.doctor()
         _safe_print(json.dumps(report, indent=2))
         return 0 if report["ok"] else 1
     if action == "usage":

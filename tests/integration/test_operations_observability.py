@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -111,5 +114,27 @@ def test_doctor_has_health_snapshot_and_metrics(mgr):
     assert isinstance(d["metrics"], dict)
     assert isinstance(d["problems"], list)
     assert "stale_count" in d
+    assert d["repaired_stale_count"] == 0
     assert "groups" in d
     assert "active_requests" in d
+
+
+def test_doctor_repair_removes_dead_record_and_preserves_live_session(mgr):
+    live = mgr._peers["s1"]
+    dead_peer_id = str(uuid4())
+    dead_instance_id = str(uuid4())
+    dead = replace(
+        live,
+        peer_id=dead_peer_id,
+        instance_id=dead_instance_id,
+        pid=2**31 - 1,
+        last_seen=(datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+        socket_path=str(mgr._paths.socket_path_for(dead_peer_id, dead_instance_id)),
+    )
+    mgr._registry.register(dead)
+
+    report = mgr.doctor(repair=True)
+
+    assert report["repaired_stale_count"] == 1
+    assert mgr._registry.get(dead_peer_id) is None
+    assert mgr._registry.get(live.peer_id) is not None

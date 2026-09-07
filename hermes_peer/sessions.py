@@ -1205,12 +1205,12 @@ class PeerSessionManager:
         except Exception:  # noqa: BLE001 - fail closed to unreachable
             return None
 
-    def doctor(self) -> dict:
-        """Diagnostics for `hermes peer doctor` (REL-1104, P6.3/G1.4).
+    def doctor(self, *, repair: bool = False) -> dict:
+        """Diagnose the runtime and optionally run fenced stale-record cleanup.
 
-        Combines the v1 seam/runtime facts with the content-free health
-        snapshot (backend, peers, store, groups, requests, stale state),
-        metrics and actionable remedies.
+        The default remains read-only. ``repair=True`` delegates mutation to
+        :meth:`DiscoveryService.repair_stale`, which re-probes identity, socket
+        and inode ownership immediately before removing each record.
         """
         from agent_peer.groups import GroupStore
         from agent_peer.health import health_snapshot
@@ -1218,8 +1218,7 @@ class PeerSessionManager:
 
         from .plugin import host_seam_supported
 
-        # Stale count is read-only here (never a side-effectful repair in
-        # doctor): registry heartbeat staleness, not mutation.
+        removed = self._discovery.repair_stale(self._paths.root) if repair else []
         stale = len(self._registry.stale_candidates())
         groups = GroupStore(self._store)
         requests = RequestStore(self._store)
@@ -1246,6 +1245,7 @@ class PeerSessionManager:
             "groups": health["groups"],
             "active_requests": health["active_requests"],
             "stale_count": health["stale_count"],
+            "repaired_stale_count": len(removed),
             "backend": health["backend"],
             "policy": self._policy.policy.value,
             "metrics": health["metrics"],

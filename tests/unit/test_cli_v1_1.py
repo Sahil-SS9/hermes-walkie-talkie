@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from argparse import ArgumentParser
 
 import pytest
 
@@ -131,6 +132,38 @@ def test_request_usage(mgr):
     out = _render_interactive_plain(cmd_peer_request(""))
     assert "Peer request" in out
     assert "create" in out
+
+
+def test_peer_doctor_parser_accepts_repair():
+    from hermes_peer.commands import build_peer_cli_parser
+
+    parser = ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    build_peer_cli_parser(subparsers)
+
+    args = parser.parse_args(["peer", "doctor", "--repair"])
+    assert args.peer_action == "doctor"
+    assert args.repair is True
+
+
+def test_peer_doctor_repair_uses_fenced_manager_cleanup(monkeypatch, capsys):
+    import hermes_peer.commands as cmdmod
+
+    class RepairManager:
+        def __init__(self):
+            self.repair_values = []
+
+        def doctor(self, *, repair=False):
+            self.repair_values.append(repair)
+            return {"ok": True, "repaired_stale_count": 4}
+
+    manager = RepairManager()
+    monkeypatch.setattr(cmdmod, "get_manager", lambda: manager)
+    args = type("Args", (), {"peer_action": "doctor", "repair": True})()
+
+    assert cmdmod.run_peer_cli(args) == 0
+    assert manager.repair_values == [True]
+    assert '"repaired_stale_count": 4' in capsys.readouterr().out
 
 
 def test_request_tools_error_branches(monkeypatch):

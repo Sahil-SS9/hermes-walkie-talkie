@@ -59,6 +59,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Peer registry maintenance: `hermes peer doctor --repair` now exists as documented and runs the existing race-safe stale-record cleanup. Plain `hermes peer doctor` remains read-only, and repair reports the number of records removed.
 - Multi-session hosts: per-peer Send/Inbox/Policy/Rename actions no longer
   fail with "no session_id supplied and multiple sessions active" — the
   invoking session is threaded through every action.
