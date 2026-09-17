@@ -148,7 +148,9 @@ Expected output includes `hermes-peer` with status `enabled`.
 ### Verify the dashboard API is reachable
 
 ```bash
-curl -s http://localhost:9119/api/plugins/hermes-peer/health | python3 -m json.tool
+curl -s http://localhost:9119/api/plugins/hermes-peer/health
+
+For formatted JSON, pipe the response through your preferred local JSON viewer.
 ```
 
 Expected: `{"ok": true, "backend": "posix", ...}`.
