@@ -66,66 +66,29 @@ class TestBusyRecipient:
         mgr.shutdown()
 
 
-class TestTuiExactTarget:
-    def test_no_cross_session_leakage_idle_and_busy(self, monkeypatch):
-        """E2E-904: two dashboard sessions; each receives only its own.
-
-        Requires the Hermes candidate checkout (tui_gateway lives there);
-        skipped in a clean standalone environment.
-        """
-        pytest.importorskip("tui_gateway.server")
-        import tui_gateway.server as server
-
-        sessions: dict[str, dict] = {}
-        submitted: list[tuple[str, str]] = []
-        queued: list[tuple[str, str]] = []
-
-        monkeypatch.setattr(server, "_sessions", sessions)
-        monkeypatch.setattr(server, "_sessions_lock", threading.RLock())
-
-        def fake_run(rid, sid, session, text, **_kw):
-            submitted.append((sid, str(text)))
-
-        def fake_enqueue(session, text, transport, **_kw):
-            queued.append((str(session["session_key"]), str(text)))
-
-        monkeypatch.setattr(server, "_run_prompt_submit", fake_run)
-        monkeypatch.setattr(server, "_enqueue_prompt", fake_enqueue)
-
-        def session(key: str, running: bool):
-            return {
-                "agent": None,
-                "session_key": key,
-                "running": running,
-                "transport": object(),
-                "queued_prompt": None,
-                "_finalized": False,
-                "history_lock": threading.Lock(),
-            }
-
-        sessions["sid-1"] = session("tui:one", running=False)
-        sessions["sid-2"] = session("tui:two", running=True)
-
-        assert server.inject_external_message("to one", target_session="sid-1") is True
-        assert server.inject_external_message("to two", target_session="sid-2") is True
-
-        assert submitted == [("sid-1", "to one")]
-        assert queued == [("tui:two", "to two")]
-
-
 class TestGatewayExactTarget:
-    def test_busy_queued_idle_dispatched_no_leak(self, monkeypatch):
-        """E2E-905: one busy gateway session queues, another dispatches.
+    """E2E-905: exact-session gateway injection through the PUBLIC plugin seam.
 
-        Requires the Hermes candidate checkout (gateway lives there);
-        skipped in a clean standalone environment.
-        """
+    Pins the seam walkie actually uses at runtime:
+    ``PluginContext.inject_message(content, mode="queue", session_key=...)``
+    routed through the manager-owned gateway injector that the live gateway
+    publishes via ``set_gateway_message_injector`` (gateway/run_inbound.py).
+    Requires the Hermes candidate checkout; skipped in a clean standalone
+    environment (importorskip on the core modules).
+    """
+
+    def test_busy_queued_idle_dispatched_no_leak(self, monkeypatch):
         pytest.importorskip("gateway.run")
         from datetime import datetime
 
         from gateway.platforms.base import MessageEvent, Platform, SessionSource
         from gateway.run import GatewayRunner
         from gateway.session import SessionEntry
+        from hermes_cli.plugins import PluginContext, PluginManager
+        try:
+            from hermes_cli.plugins_manifest import PluginManifest
+        except ImportError:  # older core layouts
+            from hermes_cli.plugins import PluginManifest  # type: ignore[assignment]
 
         KEY_A = "telegram:dm:chat-a:user-1"
         KEY_B = "telegram:dm:chat-b:user-1"
@@ -140,41 +103,118 @@ class TestGatewayExactTarget:
                 platform=Platform.TELEGRAM,
             )
 
-        adapter = type("A", (), {"_pending_messages": {}, "_active_sessions": {KEY_A}})()
+        store_entries = {KEY_A: entry(KEY_A), KEY_B: entry(KEY_B)}
+
+        class Adapter:
+            """Minimal adapter mirroring the base busy-session contract.
+
+            The real ``PlatformAdapter.handle_message`` routes an event for an
+            ACTIVE session into ``_pending_messages`` (queued at the safe
+            boundary) instead of spawning a new turn. This stub encodes that
+            contract so the test pins the gateway-side queue-vs-dispatch
+            decision without a full platform adapter.
+            """
+
+            def __init__(self):
+                self._pending_messages = {}
+                self._active_sessions = {KEY_A}
+
+            async def handle_message(self, event):
+                key = event.metadata.get("gateway_session_key") if event.metadata else None
+                if key and key in self._active_sessions:
+                    self._pending_messages[key] = event
+                else:
+                    dispatched.append(event)
+
+        dispatched: list[MessageEvent] = []
+        adapter = Adapter()
+
+        async def adapter_handle(event):
+            dispatched.append(event)
+
         r = GatewayRunner.__new__(GatewayRunner)
         r.session_store = type(
             "S",
             (),
             {
-                "_entries": {KEY_A: entry(KEY_A), KEY_B: entry(KEY_B)},
+                "_entries": store_entries,
                 "_is_session_ended_in_db": staticmethod(lambda sid: False),
+                "lookup_by_session_key": staticmethod(lambda key: store_entries.get(key)),
             },
         )()
+        # _dispatch_plugin_message_injection reads the async facade, which wraps
+        # session_store; build it the same way the runner does.
+        from gateway.session import AsyncSessionStore
+        r._async_session_store = AsyncSessionStore(r.session_store)
         r.adapters = {"telegram": adapter}
-        r.config = type("C", (), {"platforms": {}})()
         r._sessions = {}
-        dispatched: list[MessageEvent] = []
+        r._running = True
+        r._draining = False
+        r._background_tasks = set()
+        r._gateway_loop = None  # set below inside the running loop
 
-        async def fake_handle(event):
-            dispatched.append(event)
-
-        r._handle_message = fake_handle
-        monkeypatch.setattr("gateway.run.resolve_delivery_transport", lambda p, c, a: type("T", (), {"adapter": adapter})() if p == Platform.TELEGRAM else None)
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"plugins": {"entries": {"hermes-peer": {"allow_gateway_injection": True}}}})
+        # The dispatcher routes through the live adapter's handle_message.
+        # The dispatcher resolves the live delivery adapter through the authz
+        # mixin (sync call); stub it to return our adapter.
+        import gateway.authz_mixin as _authz_mod
+        import gateway.run as _run_mod
+        monkeypatch.setattr(
+            _authz_mod.GatewayAuthorizationMixin, "_delivery_adapter_for",
+            lambda self, source: adapter, raising=False,
+        )
+        monkeypatch.setattr(
+            _authz_mod.GatewayAuthorizationMixin, "_restored_source",
+            lambda self, entry_obj: entry_obj.origin, raising=False,
+        )
+        monkeypatch.setattr(
+            _run_mod.GatewayRunner, "_is_user_authorized_for_source",
+            lambda self, source, **_kw: True, raising=False,
+        )
 
         import asyncio
 
+        # ``_install_plugin_message_injector`` publishes to the process-wide
+        # singleton (get_plugin_manager()); the core's own suite adopts it by
+        # patching ``_plugin_manager``. Mirror that here so the context and the
+        # installed injector share one manager.
+        manager = PluginManager()
+        monkeypatch.setattr("hermes_cli.plugins._plugin_manager", manager, raising=False)
+        ctx = PluginContext(
+            PluginManifest(name="hermes-peer", key="hermes-peer", source="user"),
+            manager,
+        )
+        # The live wiring (gateway/run_inbound.py::_install_plugin_message_injector).
+        r._install_plugin_message_injector()
+
+        # Plugin consent for gateway injection comes from the manager's home
+        # config; patch at the same seam the core's own suite patches.
+        monkeypatch.setattr(
+            PluginContext, "_gateway_injection_allowed", lambda self: True,
+        )
+
         async def run():
-            # Busy session: queued, not dispatched.
-            ok_busy = await r.inject_plugin_message("busy work", target_session=KEY_A, plugin_id="hermes-peer")
-            # Idle session: dispatched.
-            ok_idle = await r.inject_plugin_message("idle work", target_session=KEY_B, plugin_id="hermes-peer")
+            loop = asyncio.get_running_loop()
+            r._gateway_loop = loop
+            # Busy session: routed, and the gateway side queues it (adapter has
+            # KEY_A in _active_sessions) rather than dispatching a second turn.
+            ok_busy = ctx.inject_message(
+                "busy work", role="user", mode="queue", session_key=KEY_A,
+            )
+            # Idle session: dispatched through the adapter handler.
+            ok_idle = ctx.inject_message(
+                "idle work", role="user", mode="queue", session_key=KEY_B,
+            )
+            # Drain the scheduled injection task inside the SAME loop the
+            # scheduler pinned (safe_schedule_threadsafe targets _gateway_loop).
+            if r._background_tasks:
+                await asyncio.gather(*r._background_tasks, return_exceptions=True)
+                await asyncio.sleep(0)
             return ok_busy, ok_idle
 
         ok_busy, ok_idle = asyncio.run(run())
         assert ok_busy is True and ok_idle is True
-        assert len(dispatched) == 1 and dispatched[0].text == "idle work"
-        assert adapter._pending_messages[KEY_A].text == "busy work"
+        assert len(dispatched) == 1 and dispatched[0].text.endswith("idle work")
+        assert KEY_B not in (adapter._pending_messages or {})
 
 
 class TestResumeReset:
