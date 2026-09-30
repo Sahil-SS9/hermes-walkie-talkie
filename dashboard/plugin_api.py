@@ -58,19 +58,29 @@ def _ws_upgrade_authorized(ws: WebSocket) -> bool:
     delegate raises, the upgrade is REJECTED. A broken production import
     must never become an authentication bypass. Tests inject the auth
     decision by monkeypatching this function or the delegate module.
-    """
-    try:
-        import importlib
 
-        _ws = importlib.import_module("hermes_cli.web_server")
-    except Exception:
-        log.error("hermes_cli.web_server import failed; rejecting WS upgrade (fail closed)")
-        return False
-    try:
-        return bool(_ws._ws_auth_ok(ws))
-    except Exception:
-        log.error("WS auth delegate raised; rejecting WS upgrade (fail closed)")
-        return False
+    Compat note (2026-09-29 audit): upstream moved ``_ws_auth_ok`` from
+    ``hermes_cli.web_server`` to ``hermes_cli.web_server_chat`` (commits
+    5608fe7cdf and 5f1feb5344). Try the new home first, then the legacy
+    location; any failure rejects the upgrade.
+    """
+    import importlib
+
+    for modname in ("hermes_cli.web_server_chat", "hermes_cli.web_server"):
+        try:
+            mod = importlib.import_module(modname)
+        except Exception:
+            continue
+        delegate = getattr(mod, "_ws_auth_ok", None)
+        if delegate is None:
+            continue
+        try:
+            return bool(delegate(ws))
+        except Exception:
+            log.error("WS auth delegate raised; rejecting WS upgrade (fail closed)")
+            return False
+    log.error("no _ws_auth_ok delegate importable (web_server_chat/web_server); rejecting WS upgrade (fail closed)")
+    return False
 
 
 # ---------------------------------------------------------------------------

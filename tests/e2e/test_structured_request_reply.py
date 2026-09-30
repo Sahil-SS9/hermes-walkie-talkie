@@ -41,7 +41,7 @@ FakeModelServer = _fms_mod.FakeModelServer
 
 def _subprocess_env(base, home: Path, runtime: Path, state: Path) -> dict:
     env = dict(base)
-    env["PYTHONPATH"] = f"{CORE_ROOT}:{home / 'plugins' / 'hermes-walkie-talkie'}"
+    env["PYTHONPATH"] = f"{CORE_ROOT}:{home / 'plugins' / 'hermes-walkie-talkie'}:{Path(__file__).resolve().parent}"
     env["HERMES_HOME"] = str(home)
     env["HERMES_CORE_ROOT"] = str(CORE_ROOT)
     env["PLUGIN_DIR"] = str(home / "plugins" / "hermes-walkie-talkie")
@@ -73,7 +73,8 @@ import os, sys, json, time
 sys.path.insert(0, os.environ["HERMES_CORE_ROOT"])
 sys.path.insert(0, os.environ["PLUGIN_DIR"])
 from run_agent import AIAgent
-from hermes_cli.plugins import discover_plugins, notify_session_open
+from hermes_cli.plugins import discover_plugins
+from _host_open_compat import notify_session_open_compat
 
 session_id = os.environ["SESSION_ID"]
 base_url = os.environ["FAKE_MODEL_URL"]
@@ -82,7 +83,7 @@ agent = AIAgent(
     base_url=base_url, model="fake-model", api_key="fake",
     enabled_toolsets=["hermes-peer"], session_id=session_id,
 )
-assert notify_session_open(session_id, "e2e"), "host-open lifecycle did not fire"
+assert notify_session_open_compat(session_id, "e2e"), "host-open lifecycle did not fire"
 result = agent.run_conversation(os.environ["PROMPT"])
 final_response = str(result.get("final_response", ""))
 print("AGENT_DONE " + json.dumps(final_response), flush=True)
