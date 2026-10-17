@@ -15,7 +15,7 @@ jobs:
         # POSIX suite (AF_UNIX/SO_PEERCRED) runs on POSIX runners; Windows
         # evidence lives in the dedicated native-windows job (named pipes/DACL).
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - name: Install uv

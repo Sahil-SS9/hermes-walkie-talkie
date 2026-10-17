@@ -4,7 +4,7 @@ version = "0.1.0rc2"
 description = "Same-machine, cross-session agent messaging for AI harnesses — Hermes first."
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.15"
 authors = [{ name = "Sahil Saghir" }]
 keywords = ["agent", "messaging", "hermes", "ipc", "unix-socket", "peer"]
 classifiers = [
@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Communications",
 ]
 # The core has zero runtime dependencies by design (ADR-0001). Hermes itself
@@ -29,7 +30,7 @@ dependencies = []
 # SID-bound DACL. Only needed on Windows; Linux/macOS remain dependency-light.
 windows = ["pywin32==310; sys_platform == 'win32'"]
 # Dashboard plugin API (FastAPI router mounted by the Hermes Desktop host).
-dashboard = ["fastapi==0.115.6"]
+dashboard = ["fastapi==0.133.1"]
 
 [project.entry-points."hermes_agent.plugins"]
 hermes-peer = "hermes_peer.plugin"
@@ -74,8 +75,8 @@ dev = [
     "ty==0.0.2",
     # Dashboard plugin tests exercise the FastAPI router (runtime gets it
     # from the Hermes core host).
-    "fastapi==0.115.6",
-    "httpx==0.27.2",
-    "pytest-asyncio==0.24.0",
+    "fastapi==0.133.1",
+    "httpx==0.28.1",
+    "pytest-asyncio==1.4.0",
     "websockets==14.1",
 ]
