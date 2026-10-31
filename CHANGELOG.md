@@ -37,6 +37,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Python 3.14 support: `requires-python` widened to `>=3.11,<3.15`, 3.14
+  classifier added and 3.14 added to the CI matrix.
+- Dashboard extra and dev tooling: FastAPI 0.115.6 → 0.133.1, httpx
+  0.27.2 → 0.28.1, pytest-asyncio 0.24.0 → 1.4.0; lock moves starlette
+  0.41.3 → 0.52.1. Clears the `asyncio.iscoroutinefunction` /
+  `get_event_loop_policy` deprecation warnings (removal in Python 3.16).
+  No runtime dependency added; the core still has zero dependencies.
+
 - Presence: live peer count now means *open interactive sessions*
   (probe-live, non-gateway surfaces). Two open CLI sessions show `2 Live`,
   not one "working" session. Gateway/cron automation is excluded from the
